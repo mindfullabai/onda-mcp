@@ -1,0 +1,50 @@
+{
+  "name": "@mindfullabai/onda-mcp",
+  "version": "0.1.0",
+  "description": "MCP server for Onda terminal - control tabs, panes, terminals from AI agents",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "onda-mcp": "./dist/index.js"
+  },
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "homepage": "https://github.com/mindfullabai/onda-mcp",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mindfullabai/onda-mcp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/mindfullabai/onda-mcp/issues"
+  },
+  "keywords": [
+    "mcp",
+    "onda",
+    "terminal",
+    "ai-agent",
+    "model-context-protocol",
+    "claude"
+  ],
+  "author": "Mindfull AI <hello@mindfull.ai>",
+  "license": "MIT",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc && chmod +x dist/index.js",
+    "dev": "tsx src/index.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1"
+  },
+  "devDependencies": {
+    "@types/node": "^25.2.3",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}
