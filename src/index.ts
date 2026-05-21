@@ -203,10 +203,13 @@ const TOOLS = [
   {
     name: 'onda_terminal_list',
     description:
-      'List all active terminals with their IDs, PIDs, working directories, and alive status. Essential for discovering which terminals exist before running commands.',
+      'List active terminals. Each entry: { id, pid, cwd, alive, workspaceId, paneId, tabId, windowId }. Use the optional filters to scope the list. Essential to disambiguate which terminal belongs to which workspace/window when many are alive — no more cwd reverse-lookup.',
     inputSchema: {
       type: 'object' as const,
-      properties: {},
+      properties: {
+        workspaceId: { type: 'string', description: 'Filter: only terminals in this workspace.' },
+        windowId: { type: 'string', description: 'Filter: only terminals in this window.' },
+      },
     },
   },
   {
@@ -218,6 +221,115 @@ const TOOLS = [
         id: { type: 'string', description: 'Terminal ID to kill.' },
       },
       required: ['id'],
+    },
+  },
+
+  // --- Terminal Tap (read + subscribe + sendKeys + waitFor) ---
+  {
+    name: 'onda_terminal_read',
+    description:
+      'Read recent output of a terminal (ring buffer ~200 KB / ~1 MB if a listener is attached). Returns the current buffer content plus byte total and timestamps. Use to see what a terminal has printed without subscribing to a live stream. Lazily attaches a passive tap on first call — no impact on the terminal itself.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        id: { type: 'string', description: 'Terminal ID to read from.' },
+        lines: {
+          type: 'number',
+          description: 'Optional: cap returned content to the last N lines.',
+        },
+      },
+      required: ['id'],
+    },
+  },
+  {
+    name: 'onda_terminal_subscribe',
+    description:
+      'Attach a long-lived listener to a terminal\'s output stream. Returns a sessionId for use with onda_terminal_poll. Also returns the current buffer snapshot so the listener has full context. Cap of 4 concurrent listeners per terminal. The listener\'s name is shown in the Onda UI as a presence indicator.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        id: { type: 'string', description: 'Terminal ID to subscribe to.' },
+        listener: {
+          type: 'string',
+          description: 'Display name for this listener (shown in Onda UI presence badge). e.g. "alita", "kai", "ci-watch".',
+        },
+      },
+      required: ['id', 'listener'],
+    },
+  },
+  {
+    name: 'onda_terminal_poll',
+    description:
+      'Long-poll a subscribed terminal session for new output. Blocks up to timeoutMs (default 15000) waiting for new chunks. Returns immediately if data is already pending. Each call advances the cursor; only data emitted after the last poll is returned. Use in a loop: subscribe -> poll -> poll -> ... -> unsubscribe.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        sessionId: {
+          type: 'string',
+          description: 'Session ID returned by onda_terminal_subscribe.',
+        },
+        timeoutMs: {
+          type: 'number',
+          description: 'Max wait in ms before returning empty. Default 15000.',
+        },
+      },
+      required: ['sessionId'],
+    },
+  },
+  {
+    name: 'onda_terminal_unsubscribe',
+    description:
+      'Detach a listener session. Idempotent. Always call this when done to free the ring buffer (drops back to idle size after the last subscriber leaves).',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        sessionId: { type: 'string', description: 'Session ID to detach.' },
+      },
+      required: ['sessionId'],
+    },
+  },
+  {
+    name: 'onda_terminal_listeners',
+    description:
+      'List currently attached listeners for a terminal. Returns name + sessionId + timestamps. Used to inspect who is observing a terminal (introspection / debugging).',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        id: { type: 'string', description: 'Terminal ID to inspect.' },
+      },
+      required: ['id'],
+    },
+  },
+  {
+    name: 'onda_terminal_wait_for',
+    description:
+      'Block until a regex pattern matches new terminal output, or timeout. Useful to synchronize scripted command sequences: run command -> wait for prompt -> run next command. Pattern is a JavaScript regex string; flags default to "m" (multiline). Returns { matched: bool, match?: string }.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        id: { type: 'string', description: 'Terminal ID to watch.' },
+        pattern: { type: 'string', description: 'Regex pattern (string form).' },
+        flags: { type: 'string', description: 'Regex flags. Default "m".' },
+        timeoutMs: { type: 'number', description: 'Max wait in ms. Default 30000.' },
+      },
+      required: ['id', 'pattern'],
+    },
+  },
+  {
+    name: 'onda_terminal_send_keys',
+    description:
+      'Send semantic key sequences to a terminal (Ctrl+C, Up, Enter, Esc, F5, Tab, ...). Each entry in `keys` is mapped to the appropriate stdin bytes. Supports Ctrl+<letter>, Arrow keys, Function keys F1-F12, Enter/Tab/Esc/Backspace/Delete/Home/End/PageUp/PageDown/Insert/Space, and raw literal text as fallback. Use this for tmux-like control instead of onda_terminal_send when you need to type special keys.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        id: { type: 'string', description: 'Terminal ID to send to.' },
+        keys: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Ordered list of key names. Example: ["Ctrl+C"], ["Up", "Up", "Enter"], ["Esc", ":wq", "Enter"].',
+        },
+      },
+      required: ['id', 'keys'],
     },
   },
 
@@ -263,11 +375,31 @@ const TOOLS = [
       required: ['id'],
     },
   },
+  {
+    name: 'onda_tab_exec',
+    description:
+      'Open a new tab and spawn a process directly with exact argv (bypasses shell parsing). Use this when you need to pass multi-line strings or special characters as a single argument — e.g. launching `claude` with a structured preamble. The process replaces the shell in the tab\'s PTY: argv is passed to execve() as-is, so embedded newlines, quotes, and dollar signs are preserved verbatim.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        bin: { type: 'string', description: 'Absolute path or PATH-resolvable binary to spawn (e.g., "claude", "/usr/local/bin/aider").' },
+        args: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Arguments passed verbatim to the binary. Each element is one argv entry; no shell parsing happens.',
+        },
+        cwd: { type: 'string', description: 'Working directory for the spawned process.' },
+        workspaceId: { type: 'string', description: 'Workspace ID to host the new tab. Omit to use active workspace.' },
+      },
+      required: ['bin'],
+    },
+  },
 
   // --- Workspace ---
   {
     name: 'onda_workspace_list',
-    description: 'List all workspaces with their IDs, names, root paths, and which is active.',
+    description:
+      'List all workspaces. Each entry: { id, name, rootPath, mountedIn }. `mountedIn` is the windowId hosting that workspace, or null if not currently mounted. Use this with onda_window_list to map workspaces ↔ windows.',
     inputSchema: {
       type: 'object' as const,
       properties: {},
@@ -299,13 +431,15 @@ const TOOLS = [
   },
   {
     name: 'onda_workspace_add_terminal',
-    description: 'Add a new terminal pane to a workspace. Works in tiled mode to create terminals within workspace layout.',
+    description:
+      'Add a new terminal pane to a workspace and wait for its PTY to be ready. Returns { success, terminalId, paneId, workspaceId, windowId, ready }. ready=true means the PTY has finished spawning and is safe to write to. Set waitForReady:false to skip the handshake (legacy fire-and-forget behavior).',
     inputSchema: {
       type: 'object' as const,
       properties: {
         workspaceId: { type: 'string', description: 'Workspace ID. Omit to use active workspace.' },
         cwd: { type: 'string', description: 'Working directory for the new terminal.' },
         shell: { type: 'string', description: 'Shell to use (e.g., /bin/zsh).' },
+        waitForReady: { type: 'boolean', description: 'Default true. When false, returns as soon as the pane object is created (PTY may still be spawning).' },
       },
     },
   },
@@ -323,6 +457,85 @@ const TOOLS = [
         },
       },
       required: ['layout'],
+    },
+  },
+  {
+    name: 'onda_workspace_locate',
+    description:
+      'Find a workspace by name, id, or rootPath without listing them all. Returns { workspace: { id, name, rootPath, mountedIn } } or { workspace: null }. mountedIn is the windowId currently hosting the workspace, or null if not mounted.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        id: { type: 'string', description: 'Workspace ID to look up.' },
+        name: { type: 'string', description: 'Workspace name to look up.' },
+        rootPath: { type: 'string', description: 'Workspace rootPath to look up.' },
+      },
+    },
+  },
+
+  // --- Window (multi-window aware) ---
+  {
+    name: 'onda_window_list',
+    description:
+      'List all Onda main windows. Returns { windows: [{ windowId, isFocused, title, workspaceIds[], activeWorkspaceId, uiMode }] }. Use this before placing a new workspace/terminal to know what windows exist and which workspace lives in which window.',
+    inputSchema: { type: 'object' as const, properties: {} },
+  },
+  {
+    name: 'onda_window_new',
+    description:
+      'Open a fresh empty main window (analogue of File > New Window). Returns { windowId }. Useful when an agent needs to host a workspace in a brand new window without contaminating existing ones.',
+    inputSchema: { type: 'object' as const, properties: {} },
+  },
+
+  // --- Advanced terminal spawn ---
+  {
+    name: 'onda_terminal_spawn',
+    description:
+      'Spawn a binary inside an EXISTING pane by writing `exec bin args...` into its PTY. Preserves multi-line/quoted argv elements verbatim (each one becomes a single execve argv entry after shell quoting). Use this to launch `claude` (or any agent) with a structured prompt inside a workspace pane created via onda_workspace_add_terminal. Either paneId or workspaceId is required; if workspaceId, the first terminal pane in that workspace is used.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        paneId: { type: 'string', description: 'Target pane ID (preferred).' },
+        workspaceId: { type: 'string', description: 'Workspace ID — use when paneId is not known.' },
+        bin: { type: 'string', description: 'PATH-resolvable or absolute binary (e.g., "claude").' },
+        args: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Arguments passed verbatim. Each element is one argv entry; embedded newlines/quotes are preserved.',
+        },
+      },
+      required: ['bin'],
+    },
+  },
+
+  // --- High-level macro ---
+  {
+    name: 'onda_launch_session',
+    description:
+      'High-level macro: ensure workspace exists → mount it in target window → add a terminal pane → spawn `bin` with `args` (or `prompt` as single argv). Atomic from the agent\'s point of view. Supports placement modes: "auto" (default), "current-window", "window:<windowId>", "new-window", "ask-user" (interactive — see below).\n\n**Placement "ask-user"**: the tool does NOT proceed. Instead returns { needsDecision: true, options: [{placement, label}], workspace }. The host agent must surface the choice to the human user and re-invoke this tool with placement set to a concrete value (e.g. "window:w-abc").\n\nOn success returns { windowId, workspaceId, terminalId, paneId, pid }.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        workspace: {
+          type: 'object',
+          description: 'Workspace reference. Provide id | name | rootPath. Set createIfMissing:true (with name+rootPath) to auto-create.',
+          properties: {
+            id: { type: 'string' },
+            name: { type: 'string' },
+            rootPath: { type: 'string' },
+            createIfMissing: { type: 'boolean' },
+          },
+        },
+        bin: { type: 'string', description: 'Binary to spawn (e.g., "claude").' },
+        args: { type: 'array', items: { type: 'string' }, description: 'Argv entries (preserved verbatim).' },
+        prompt: { type: 'string', description: 'Shortcut: passed as a single argv entry. Ignored if args is set.' },
+        placement: {
+          type: 'string',
+          description: 'auto | current-window | window:<id> | new-window | ask-user',
+        },
+        addTerminalIfNeeded: { type: 'boolean', description: 'Default true. When false, expects a pane to already exist in the workspace.' },
+      },
+      required: ['workspace', 'bin'],
     },
   },
 
@@ -385,6 +598,13 @@ const TOOL_MAP: Record<string, { method: string; mapParams?: (args: Record<strin
   onda_terminal_send: { method: 'terminal.send' },
   onda_terminal_list: { method: 'terminal.list' },
   onda_terminal_kill: { method: 'terminal.kill' },
+  onda_terminal_read: { method: 'terminal.read' },
+  onda_terminal_subscribe: { method: 'terminal.subscribe' },
+  onda_terminal_poll: { method: 'terminal.poll' },
+  onda_terminal_unsubscribe: { method: 'terminal.unsubscribe' },
+  onda_terminal_listeners: { method: 'terminal.listeners' },
+  onda_terminal_wait_for: { method: 'terminal.waitFor' },
+  onda_terminal_send_keys: { method: 'terminal.sendKeys' },
 
   // Tab
   onda_tab_new: {
@@ -399,6 +619,13 @@ const TOOL_MAP: Record<string, { method: string; mapParams?: (args: Record<strin
   onda_tab_list: { method: 'tab.list' },
   onda_tab_close: { method: 'tab.close' },
   onda_tab_focus: { method: 'tab.focus' },
+  onda_tab_exec: {
+    method: 'tab.exec',
+    mapParams: (args) => ({
+      ...args,
+      workspaceId: args.workspaceId || ONDA_CONTEXT.workspaceId || undefined,
+    }),
+  },
 
   // Workspace
   onda_workspace_list: { method: 'workspace.list' },
@@ -413,6 +640,23 @@ const TOOL_MAP: Record<string, { method: string; mapParams?: (args: Record<strin
     }),
   },
   onda_workspace_tile: { method: 'workspace.setLayout' },
+  onda_workspace_locate: { method: 'workspace.locate' },
+
+  // Window
+  onda_window_list: { method: 'window.list' },
+  onda_window_new: { method: 'window.new' },
+
+  // Advanced spawn + macro
+  onda_terminal_spawn: {
+    method: 'terminal.spawnInPane',
+    mapParams: (args) => ({
+      paneId: args.paneId || ONDA_CONTEXT.paneId || undefined,
+      workspaceId: args.workspaceId || ONDA_CONTEXT.workspaceId || undefined,
+      bin: args.bin,
+      args: args.args,
+    }),
+  },
+  onda_launch_session: { method: 'launchSession' },
 
   // System (onda_context handled separately - it's local, not RPC)
   onda_status: { method: 'session.current' },
