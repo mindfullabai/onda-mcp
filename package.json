@@ -43,7 +43,8 @@
     "build": "tsc && chmod +x dist/index.js bin/install-skill.mjs scripts/install-skill.mjs",
     "dev": "tsx src/index.ts",
     "install-skill": "node scripts/install-skill.mjs",
-    "postinstall": "node scripts/install-skill.mjs --quiet || true"
+    "postinstall": "node scripts/install-skill.mjs --quiet || true",
+    "prepublishOnly": "npm run build"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.1"
