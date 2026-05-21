@@ -315,6 +315,45 @@ const TOOLS = [
       required: ['id', 'pattern'],
     },
   },
+  // --- Spatial awareness (M+1 follow-up) ---
+  {
+    name: 'onda_workspace_layout',
+    description:
+      'Read the current layout of a workspace: mosaic tree, list of pane IDs, active pane, viewport dimensions, and per-pane cwd. Use this BEFORE spawning a new terminal to decide where to place it (right/down/replace) and whether the viewport has room. Returns null for `workspace` if the id is unknown. Omit workspaceId to use the active workspace.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        workspaceId: { type: 'string', description: 'Workspace ID. Omit for active workspace.' },
+      },
+    },
+  },
+  {
+    name: 'onda_window_screenshot',
+    description:
+      'Capture a PNG/JPEG snapshot of an Onda main window for visual debugging. Returns either a base64 dataUrl or a tempfile path. Use this when you (the agent) need to SEE what the user sees — verifying a layout change, confirming a feature renders correctly, or investigating UI glitches. Returns { dataUrl | path, width, height, windowId, capturedAt }. Defaults: focused window, PNG format, dataUrl=true.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        windowId: {
+          type: 'string',
+          description: 'Window ID to capture. Omit for the focused window.',
+        },
+        format: {
+          type: 'string',
+          enum: ['png', 'jpeg'],
+          description: 'Output format. PNG is lossless (default), JPEG is smaller.',
+        },
+        quality: {
+          type: 'number',
+          description: 'JPEG quality 0..100 (default 80). Ignored for PNG.',
+        },
+        dataUrl: {
+          type: 'boolean',
+          description: 'When true (default), returns base64 dataUrl. When false, writes a tempfile and returns its path — useful for large captures.',
+        },
+      },
+    },
+  },
   {
     name: 'onda_terminal_send_keys',
     description:
@@ -432,7 +471,7 @@ const TOOLS = [
   {
     name: 'onda_workspace_add_terminal',
     description:
-      'Add a new terminal pane to a workspace and wait for its PTY to be ready. Returns { success, terminalId, paneId, workspaceId, windowId, ready }. ready=true means the PTY has finished spawning and is safe to write to. Set waitForReady:false to skip the handshake (legacy fire-and-forget behavior).',
+      'Add a new terminal pane to a workspace and wait for its PTY to be ready. Returns { success, terminalId, paneId, workspaceId, windowId, ready }. \n\nPlacement: by default the new pane is appended via react-mosaic\'s built-in logic (typically "split right"). For deterministic placement, pass `direction` and (optionally) `relativeToPaneId` — this routes through splitPane and gives you explicit control.\n\nCALL onda_workspace_layout FIRST when you care about placement: it returns the current mosaic tree + active pane + viewport, so you can decide whether to stack "down" (output-heavy panes) or split "right" (parallel-watch panes).',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -440,6 +479,15 @@ const TOOLS = [
         cwd: { type: 'string', description: 'Working directory for the new terminal.' },
         shell: { type: 'string', description: 'Shell to use (e.g., /bin/zsh).' },
         waitForReady: { type: 'boolean', description: 'Default true. When false, returns as soon as the pane object is created (PTY may still be spawning).' },
+        direction: {
+          type: 'string',
+          enum: ['right', 'down', 'up', 'left', 'horizontal', 'vertical'],
+          description: 'Optional. When set, the pane is created by splitting an existing one in this direction. "horizontal"/"down"/"up" produce a top/bottom pair; "vertical"/"right"/"left" produce a left/right pair.',
+        },
+        relativeToPaneId: {
+          type: 'string',
+          description: 'Optional pane ID to split. When omitted with `direction` set, the active pane is used.',
+        },
       },
     },
   },
@@ -594,6 +642,10 @@ const TOOL_MAP: Record<string, { method: string; mapParams?: (args: Record<strin
   onda_pane_focus: { method: 'pane.focus' },
 
   // Terminal
+  // Spatial awareness
+  onda_workspace_layout: { method: 'workspace.layout' },
+  onda_window_screenshot: { method: 'window.screenshot' },
+
   onda_terminal_run: { method: 'terminal.run' },
   onda_terminal_send: { method: 'terminal.send' },
   onda_terminal_list: { method: 'terminal.list' },
