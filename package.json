@@ -1,12 +1,13 @@
 {
   "name": "@mindfullabai/onda-mcp",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "MCP server for Onda terminal - control tabs, panes, terminals from AI agents",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "bin": {
-    "onda-mcp": "./dist/index.js"
+    "onda-mcp": "./dist/index.js",
+    "onda-mcp-install-skill": "./bin/install-skill.mjs"
   },
   "exports": {
     ".": {
@@ -33,11 +34,16 @@
   "author": "Mindfull AI <hello@mindfull.ai>",
   "license": "MIT",
   "files": [
-    "dist"
+    "dist",
+    "bin",
+    "scripts/install-skill.mjs",
+    "skills"
   ],
   "scripts": {
-    "build": "tsc && chmod +x dist/index.js",
-    "dev": "tsx src/index.ts"
+    "build": "tsc && chmod +x dist/index.js bin/install-skill.mjs scripts/install-skill.mjs",
+    "dev": "tsx src/index.ts",
+    "install-skill": "node scripts/install-skill.mjs",
+    "postinstall": "node scripts/install-skill.mjs --quiet || true"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.1"
