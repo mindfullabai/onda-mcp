@@ -534,6 +534,42 @@ const TOOLS = [
       'Open a fresh empty main window (analogue of File > New Window). Returns { windowId }. Useful when an agent needs to host a workspace in a brand new window without contaminating existing ones.',
     inputSchema: { type: 'object' as const, properties: {} },
   },
+  {
+    name: 'onda_window_focus',
+    description:
+      'Bring a specific main window to the foreground (restore if minimized, raise, focus). When windowId is omitted, focuses the primary window. Returns { success, windowId }. Use after mounting a workspace remotely, or to wake Onda from a background CLI subagent.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        windowId: { type: 'string', description: 'Target window id. Omit to focus the primary window.' },
+      },
+    },
+  },
+  {
+    name: 'onda_window_mount_workspace',
+    description:
+      'Mount a workspace in a specific window. Idempotent when the workspace is already there. If the workspace is currently mounted in another window, orchestrates an atomic transfer via the unmount-request flow (same path the in-app "Move workspace here?" dialog uses). Returns { success, workspaceId, windowId, transferred }.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        workspaceId: { type: 'string', description: 'Workspace to mount.' },
+        windowId: { type: 'string', description: 'Destination window id.' },
+      },
+      required: ['workspaceId', 'windowId'],
+    },
+  },
+  {
+    name: 'onda_workspace_unmount',
+    description:
+      'Remove a workspace from whichever window currently hosts it (drops it from that window\'s tiled mosaic and releases the mount registry slot). The workspace continues to exist in the global list — only its on-screen mounting is dropped. Returns { success, workspaceId, windowId, alreadyUnmounted }.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        workspaceId: { type: 'string', description: 'Workspace to unmount.' },
+      },
+      required: ['workspaceId'],
+    },
+  },
 
   // --- Advanced terminal spawn ---
   {
@@ -697,6 +733,9 @@ const TOOL_MAP: Record<string, { method: string; mapParams?: (args: Record<strin
   // Window
   onda_window_list: { method: 'window.list' },
   onda_window_new: { method: 'window.new' },
+  onda_window_focus: { method: 'window.focus' },
+  onda_window_mount_workspace: { method: 'window.mountWorkspace' },
+  onda_workspace_unmount: { method: 'workspace.unmount' },
 
   // Advanced spawn + macro
   onda_terminal_spawn: {
