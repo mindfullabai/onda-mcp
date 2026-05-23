@@ -548,12 +548,21 @@ const TOOLS = [
   {
     name: 'onda_window_mount_workspace',
     description:
-      'Mount a workspace in a specific window. Idempotent when the workspace is already there. If the workspace is currently mounted in another window, orchestrates an atomic transfer via the unmount-request flow (same path the in-app "Move workspace here?" dialog uses). Returns { success, workspaceId, windowId, transferred }.',
+      'Mount a workspace in a specific window. Idempotent when the workspace is already there. If the workspace is currently mounted in another window, orchestrates an atomic transfer via the unmount-request flow (same path the in-app "Move workspace here?" dialog uses). Returns { success, workspaceId, windowId, transferred }. Pass `direction` to control how the new tile is spliced into the mosaic (mirrors the Cmd+P picker: Enter = down, Cmd+Enter = right).',
     inputSchema: {
       type: 'object' as const,
       properties: {
         workspaceId: { type: 'string', description: 'Workspace to mount.' },
         windowId: { type: 'string', description: 'Destination window id.' },
+        direction: {
+          type: 'string',
+          enum: ['down', 'right'],
+          description: 'Optional. Where to splice the new tile relative to the anchor workspace in the mosaic. Default: "down".',
+        },
+        anchorWorkspaceId: {
+          type: 'string',
+          description: 'Optional. Workspace id to anchor the split next to. Default: currently active workspace in the target window.',
+        },
       },
       required: ['workspaceId', 'windowId'],
     },
@@ -725,6 +734,9 @@ const TOOL_MAP: Record<string, { method: string; mapParams?: (args: Record<strin
       workspaceId: args.workspaceId || ONDA_CONTEXT.workspaceId || undefined,
       cwd: args.cwd,
       shell: args.shell,
+      waitForReady: args.waitForReady,
+      direction: args.direction,
+      relativeToPaneId: args.relativeToPaneId,
     }),
   },
   onda_workspace_tile: { method: 'workspace.setLayout' },
