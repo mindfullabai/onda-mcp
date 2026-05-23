@@ -655,7 +655,7 @@ const TOOLS = [
   {
     name: 'onda_agent_spawn',
     description:
-      'Delegation primitive: in one MCP call, create-or-locate a workspace, mount it in a window, add a terminal pane, exec the agent binary with a prompt, optionally press Enter to submit, and attach a listener. Returns the sessionId you hand to `onda_agent_wait`, plus a `firstChunk` snapshot of the terminal buffer so you can verify the agent actually started. Placement modes: "workspace" (default — full create+mount+add), "pane-split" (split active pane of current workspace), "same-workspace" (add a terminal to an already-mounted workspace).',
+      'Boot an agent in a workspace+pane and return once the TUI is ready to accept a prompt. Does NOT submit a task — use `onda_agent_prompt` after spawn for that. Splitting bootstrap and prompt delivery makes the flow resilient: you can retry the prompt without re-paying the agent cold-start (5-10s for Claude), and you can intercept unexpected TUI states (trust dialog, model picker) between the two steps. Placement modes: "workspace" (default — full create+mount+add), "pane-split" (split active pane of current workspace), "same-workspace" (add a terminal to an already-mounted workspace). For non-TUI binaries (bash, scripts), pass the full command in `agentArgs` and use `execMode: "run"`; `onda_agent_prompt` is then unnecessary.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -714,15 +714,20 @@ const TOOLS = [
         agentArgs: {
           type: 'array',
           items: { type: 'string' },
-          description: 'Extra argv entries appended after the binary, before the prompt. Useful for flags like ["--model", "sonnet-4-6"].',
+          description: 'Extra argv entries appended after the binary. For TUI agents (claude/qwen): use flags only (e.g. ["--dangerously-skip-permissions"]) — DO NOT include the task prompt here; submit it separately via onda_agent_prompt once readyPattern has matched. For non-TUI bins (bash/sh): include the full command line, e.g. ["-lc", "build.sh && echo DONE"].',
         },
-        prompt: {
+        execMode: {
           type: 'string',
-          description: 'The actual task to send to the agent. By default appended as the last argv entry. Caller is responsible for any protocol preamble (e.g. agent-bus conventions like "# STATUS:", "# DONE", or `/send`). The Onda layer is preamble-agnostic.',
+          enum: ['exec', 'run'],
+          description: 'How to hand the binary to the pane\'s existing shell. Default "exec": writes `exec bin args` so the binary REPLACES the shell (right for long-lived TUI agents like claude/qwen — they own the pane, no shell prompt visible). Set to "run" for one-shot commands (build, script, quick check): writes `bin args` plainly, the shell runs it as a child and re-prompts when done, so the PTY stays alive and `agent.wait` subscribers survive even for short tasks. Wrong choice for short tasks under "exec" causes the PTY to exit the moment the command completes, wiping any pending wait subscriber.',
         },
-        submitDelay: {
+        readyPattern: {
+          type: 'string',
+          description: 'JavaScript regex (string form). When set, agent.spawn blocks until the pattern matches new output before returning. Use it to synchronize on "TUI is ready for a prompt" — for Claude TUI a good default is "❯|Welcome back|Try \\"|bypass permissions"; for qwen "qwen>|Ready"; for bash this is unnecessary. The response includes `ready: true` on match, `ready: false` on timeout (caller decides whether to proceed).',
+        },
+        readyTimeoutMs: {
           type: 'number',
-          description: 'Milliseconds to wait between `exec bin args` and sending Enter. Default 300. Some TUI agents (Claude in particular) treat the prompt argv as a buffer that needs an explicit Enter to actually submit. Set to 0 to skip the Enter (legacy launchSession behaviour).',
+          description: 'Max wait for readyPattern in ms. Default 15000 (15s — enough for Claude cold-start on a busy machine).',
         },
         subscribe: {
           type: 'boolean',
@@ -730,10 +735,50 @@ const TOOLS = [
         },
         snapshotDelay: {
           type: 'number',
-          description: 'Milliseconds to wait before reading the first chunk of buffer for the `firstChunk` field in the response. Default 500. Set to 0 to skip the snapshot.',
+          description: 'Milliseconds to wait before reading the first chunk of buffer for the `firstChunk` field in the response. Default 500. Set to 0 to skip the snapshot. Ignored if readyPattern matched and provided a sync point already.',
         },
       },
       required: ['agentBin'],
+    },
+  },
+  {
+    name: 'onda_agent_prompt',
+    description:
+      'Submit a task prompt to an agent that was previously spawned with `onda_agent_spawn`. Use this once `onda_agent_spawn` has returned with `ready: true` (TUI textbox is up and accepting keystrokes). Writes the prompt as raw text into the PTY, then optionally sends Enter to submit. Idempotent in the sense that you can call it multiple times — useful for multi-line drafts (each call with `submitWith: "none"` except the last) or for retry-on-blocker scenarios.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        terminalId: {
+          type: 'string',
+          description: 'Terminal id from `onda_agent_spawn` response (paneId === terminalId for terminal-content panes).',
+        },
+        prompt: {
+          type: 'string',
+          description: 'The text to write. For TUI agents this populates the textbox. No shell-quoting — the caller talks to a TUI, not a shell. Caller is responsible for any agent-bus preamble (e.g. "# STATUS:", "# DONE" sentinels, "/send kai brief: ..." vocabulary). Onda stays opinion-free about protocol semantics.',
+        },
+        submitWith: {
+          type: 'string',
+          enum: ['enter', 'none'],
+          description: 'How to submit the prompt. "enter" (default) writes a CR after the text — this is what most TUIs need to actually submit. "none" leaves the text in the buffer without submitting; use this when chaining multiple writes (e.g. multi-line draft, each call writing one line with submitWith=none, the final one with submitWith=enter).',
+        },
+        readyPattern: {
+          type: 'string',
+          description: 'Optional defensive ready-sync regex. If provided, `agent.prompt` first runs a quick `waitForPattern` (default 5s timeout) before writing. Cheap when the buffer already matches; safety net when the caller is racing TUI cold-start. Generally redundant if `agent.spawn` already synced on the same pattern.',
+        },
+        readyTimeoutMs: {
+          type: 'number',
+          description: 'Max wait for `readyPattern` in ms. Default 5000.',
+        },
+        preWriteDelay: {
+          type: 'number',
+          description: 'Optional ms delay between ready-sync and the actual write. Some TUIs need a beat to finish layout transitions even after the textbox is technically present.',
+        },
+        postSubmitDelay: {
+          type: 'number',
+          description: 'Optional ms delay after sending Enter, before returning. Useful if you want to give the agent a moment to start streaming output that the next caller-side step (terminal_read snapshot, agent_wait) will need.',
+        },
+      },
+      required: ['terminalId', 'prompt'],
     },
   },
   {
@@ -929,10 +974,23 @@ const TOOL_MAP: Record<string, { method: string; mapParams?: (args: Record<strin
       agentName: args.agentName,
       agentBin: args.agentBin,
       agentArgs: args.agentArgs,
-      prompt: args.prompt,
-      submitDelay: args.submitDelay,
+      execMode: args.execMode,
       subscribe: args.subscribe,
       snapshotDelay: args.snapshotDelay,
+      readyPattern: args.readyPattern,
+      readyTimeoutMs: args.readyTimeoutMs,
+    }),
+  },
+  onda_agent_prompt: {
+    method: 'agent.prompt',
+    mapParams: (args) => ({
+      terminalId: args.terminalId,
+      prompt: args.prompt,
+      submitWith: args.submitWith,
+      readyPattern: args.readyPattern,
+      readyTimeoutMs: args.readyTimeoutMs,
+      preWriteDelay: args.preWriteDelay,
+      postSubmitDelay: args.postSubmitDelay,
     }),
   },
   onda_agent_wait: {
