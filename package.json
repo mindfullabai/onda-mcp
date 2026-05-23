@@ -1,6 +1,6 @@
 {
   "name": "@mindfullabai/onda-mcp",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "MCP server for Onda terminal - control tabs, panes, terminals from AI agents",
   "type": "module",
   "main": "./dist/index.js",

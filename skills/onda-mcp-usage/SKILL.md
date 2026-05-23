@@ -213,7 +213,8 @@ agent_prompt(
 # 3. Wait for the agent to signal completion
 result = agent_wait(
   sessionId=spawn.sessionId,
-  doneRegex="^# DONE|^# BLOCKED",
+  doneRegex="DONE|BLOCKED",                    # see "doneRegex pattern" below
+  timeoutMs=15000,                              # short window, loop if needed
   timeoutMs=600000,                            # 10 min budget
 )
 # → {matched: True, match: "# DONE", tailContent: "...last 4KB..."}
@@ -223,6 +224,46 @@ result = agent_wait(
 #    HARD (+unmountWorkspace + workspaceId): drop the workspace tile.
 agent_close(sessionId=spawn.sessionId)
 ```
+
+### doneRegex pattern: match across renderers
+
+Don't be too literal with `# DONE`. TUI agents re-render markdown: Claude turns `# DONE` into a styled bullet `⏺ DONE` (with bold + italic + underline ANSI), qwen prefixes timestamps, codex may emit `[DONE]`. Pick a pattern that survives the visual layer.
+
+Recommended generic patterns for delegated agents:
+
+```
+# Most resilient — matches DONE/BLOCKED regardless of bullet, prefix, or styling
+doneRegex = "(DONE|BLOCKED|FAILED|ERROR)\\b"
+
+# Conservative — matches the literal sentinel words preceded by whitespace, bullet, or markdown header
+doneRegex = "(^|\\s|[#⏺\\-\\*•])\\s*(DONE|BLOCKED|FAILED)\\b"
+
+# Strict — your team enforces "# DONE" / "# BLOCKED" exactly (works when the agent runs in a non-TUI shell, e.g. bash one-shot)
+doneRegex = "^# (DONE|BLOCKED)"
+```
+
+For Claude TUI specifically, the markdown `# DONE` in the agent's reply becomes `⏺ DONE` on screen. The bullet glyph `⏺` (U+23FA) is the most reliable marker because Claude always renders it before H1 sentinels. Combined patterns work well: `"(⏺|^|^#)\\s*DONE"`.
+
+### Long-running tasks: chunked polling
+
+`agent_wait` blocks server-side until the regex matches or `timeoutMs` elapses. **But the MCP JSON-RPC client has its own timeout (~60s)**: a single `agent_wait(timeoutMs=300000)` call will fail client-side with "Connection timeout" long before the backend would have returned, even if the agent eventually completes in time.
+
+For any task likely to take >30s, do **chunked polling**: loop with a short timeout, check `matched`, repeat until done or your budget is spent.
+
+```
+budget = 600  # 10 minutes
+elapsed = 0
+while elapsed < budget:
+    r = agent_wait(sessionId, doneRegex=..., timeoutMs=15000)
+    if r.matched:
+        break
+    elapsed += 15
+else:
+    # timed out
+    ...
+```
+
+The session cursor advances on each poll, so you don't re-scan bytes from the previous loop iteration; only new emissions are evaluated.
 
 ### Why split spawn + prompt?
 
