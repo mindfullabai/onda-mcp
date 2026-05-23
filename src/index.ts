@@ -632,6 +632,155 @@ const TOOLS = [
     },
   },
 
+  // --- Agent delegation (preferred over onda_launch_session) ---
+  // These three tools (`spawn` / `wait` / `close`) are the canonical
+  // entry points for "Claude session A delegates work to Claude session
+  // B via Onda mosaic". They expose the same composer pipeline as the
+  // legacy onda_launch_session but with three improvements:
+  //   1. Three placement modes (workspace / pane-split / same-workspace)
+  //      so the caller can decide whether to splice a new tile, split a
+  //      pane in the current workspace, or just add a terminal to an
+  //      already-mounted workspace.
+  //   2. The mount path goes through the post-fix `mountWorkspaceInTile`
+  //      flow, so the tile actually appears in the UI (the legacy
+  //      launchSession path only set the active workspace, which after
+  //      the B1 fix in Onda 1.9.1 was no longer enough on its own).
+  //   3. Optional `subscribe + sessionId` so the caller can immediately
+  //      hand the sessionId to `onda_agent_wait` without a separate
+  //      `terminal_subscribe` round-trip.
+  //
+  // The legacy `onda_launch_session` tool still works (it maps to the
+  // same backend handler) but is kept only for backward compatibility.
+  // New code should prefer `onda_agent_spawn`.
+  {
+    name: 'onda_agent_spawn',
+    description:
+      'Delegation primitive: in one MCP call, create-or-locate a workspace, mount it in a window, add a terminal pane, exec the agent binary with a prompt, optionally press Enter to submit, and attach a listener. Returns the sessionId you hand to `onda_agent_wait`, plus a `firstChunk` snapshot of the terminal buffer so you can verify the agent actually started. Placement modes: "workspace" (default — full create+mount+add), "pane-split" (split active pane of current workspace), "same-workspace" (add a terminal to an already-mounted workspace).',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        placement: {
+          type: 'string',
+          enum: ['workspace', 'pane-split', 'same-workspace'],
+          description: 'Where to host the new agent terminal. Default "workspace": create-or-locate workspace + mount + add terminal. "pane-split": split the active pane of the focused workspace. "same-workspace": add a terminal pane to an existing mounted workspace (requires `workspaceId`).',
+        },
+        // --- placement=workspace ---
+        workspaceRootPath: {
+          type: 'string',
+          description: 'placement=workspace: filesystem path used to locate (or create) the workspace. If the workspace does not exist and rootPath is set, it will be auto-created (name = basename of rootPath unless `workspaceName` is given).',
+        },
+        workspaceName: {
+          type: 'string',
+          description: 'placement=workspace: optional override for the auto-created workspace name. Ignored if a workspace already matches `workspaceRootPath`.',
+        },
+        targetWindowId: {
+          type: 'string',
+          description: 'placement=workspace: window to mount the workspace in. Default: focused window.',
+        },
+        mountDirection: {
+          type: 'string',
+          enum: ['down', 'right'],
+          description: 'placement=workspace: where to splice the new tile in the mosaic. Default "down" (matches the Cmd+P picker default).',
+        },
+        // --- placement=pane-split ---
+        splitDirection: {
+          type: 'string',
+          enum: ['right', 'down', 'left', 'up', 'horizontal', 'vertical'],
+          description: 'placement=pane-split: how to split the active pane. Default "down".',
+        },
+        splitCwd: {
+          type: 'string',
+          description: 'placement=pane-split: cwd of the new pane (typically the project root the delegated agent should work in).',
+        },
+        // --- placement=same-workspace ---
+        workspaceId: {
+          type: 'string',
+          description: 'placement=same-workspace: id of an already-mounted workspace to add a terminal to.',
+        },
+        addDirection: {
+          type: 'string',
+          enum: ['right', 'down'],
+          description: 'placement=same-workspace: split direction for the new pane. Default "down".',
+        },
+        // --- universal ---
+        agentName: {
+          type: 'string',
+          description: 'Listener label shown in the pane header (e.g. "kai-2026-05-23"). Recommended: include a date or session identifier so the user can tell concurrent delegations apart.',
+        },
+        agentBin: {
+          type: 'string',
+          description: 'Binary to exec inside the pane. Default "claude". Any PATH-resolvable executable works (claude, qwen, codex, bash, etc.).',
+        },
+        agentArgs: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Extra argv entries appended after the binary, before the prompt. Useful for flags like ["--model", "sonnet-4-6"].',
+        },
+        prompt: {
+          type: 'string',
+          description: 'The actual task to send to the agent. By default appended as the last argv entry. Caller is responsible for any protocol preamble (e.g. agent-bus conventions like "# STATUS:", "# DONE", or `/send`). The Onda layer is preamble-agnostic.',
+        },
+        submitDelay: {
+          type: 'number',
+          description: 'Milliseconds to wait between `exec bin args` and sending Enter. Default 300. Some TUI agents (Claude in particular) treat the prompt argv as a buffer that needs an explicit Enter to actually submit. Set to 0 to skip the Enter (legacy launchSession behaviour).',
+        },
+        subscribe: {
+          type: 'boolean',
+          description: 'Attach a listener and return a `sessionId` ready for `onda_agent_wait`. Default true. Also lights up the presence badge in the pane header.',
+        },
+        snapshotDelay: {
+          type: 'number',
+          description: 'Milliseconds to wait before reading the first chunk of buffer for the `firstChunk` field in the response. Default 500. Set to 0 to skip the snapshot.',
+        },
+      },
+      required: ['agentBin'],
+    },
+  },
+  {
+    name: 'onda_agent_wait',
+    description:
+      'Block on a subscriber session until a regex matches new terminal output, or timeout. Use this after `onda_agent_spawn` to wait for a sentinel pattern that indicates the delegated agent is done (or has hit a blocker). Returns { matched, match?, bufferedChunks, tailContent? } where tailContent is the last ~4KB of accumulated output (useful for surfacing a summary to the user or for debugging mismatched expectations).',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        sessionId: {
+          type: 'string',
+          description: 'Session id returned by `onda_agent_spawn` (or by a manual `onda_terminal_subscribe`).',
+        },
+        doneRegex: {
+          type: 'string',
+          description: 'JavaScript regex (string form). Default matches `^# DONE`, `^# BLOCKED`, or `Esc to interrupt`. Pick a sentinel that matches whatever the agent-bus protocol used by your team prescribes.',
+        },
+        timeoutMs: {
+          type: 'number',
+          description: 'Max wait in ms. Default 300000 (5 min). Cap to whatever your task complexity warrants.',
+        },
+        flags: {
+          type: 'string',
+          description: 'Regex flags. Default "m" (multiline).',
+        },
+      },
+      required: ['sessionId'],
+    },
+  },
+  {
+    name: 'onda_agent_close',
+    description:
+      'Escalation cleanup after an agent finishes (or to abandon a delegation). Three levels: SOFT — only `sessionId` set → unsubscribe (keeps PTY alive, lets you reattach or let the user inspect). MEDIUM — `+ killPty + terminalId` → terminates the agent process. HARD — `+ unmountWorkspace + workspaceId` (and optionally `+ closeWindow + windowId`) → full teardown of an ephemeral delegation. All fields are optional; the tool does only what you ask.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        sessionId: { type: 'string', description: 'Subscriber session to detach. Idempotent.' },
+        terminalId: { type: 'string', description: 'Terminal to kill. Required when `killPty` is true.' },
+        workspaceId: { type: 'string', description: 'Workspace to unmount. Required when `unmountWorkspace` is true.' },
+        killPty: { type: 'boolean', description: 'Default false. When true, the underlying PTY process is terminated (UI shows [Process exited]).' },
+        unmountWorkspace: { type: 'boolean', description: 'Default false. When true, the workspace is dropped from its window\'s mosaic. The workspace itself still exists in the global list.' },
+        closeWindow: { type: 'boolean', description: 'Default false. When true, the host window is closed via `BrowserWindow.close()`. Requires `windowId`. Only use when YOU spawned this window via `onda_window_new`.' },
+        windowId: { type: 'string', description: 'Required when `closeWindow` is true.' },
+      },
+    },
+  },
+
   // --- System ---
   {
     name: 'onda_context',
@@ -760,6 +909,53 @@ const TOOL_MAP: Record<string, { method: string; mapParams?: (args: Record<strin
     }),
   },
   onda_launch_session: { method: 'launchSession' },
+
+  // Agent delegation: forward EVERY declared param to the backend. Do
+  // not silently drop fields (the old `workspace.addTerminal` mapParams
+  // bug was caused exactly by that: schema declared `direction`, mapper
+  // omitted it, calls silently fell back to default placement).
+  onda_agent_spawn: {
+    method: 'agent.spawn',
+    mapParams: (args) => ({
+      placement: args.placement,
+      workspaceRootPath: args.workspaceRootPath,
+      workspaceName: args.workspaceName,
+      targetWindowId: args.targetWindowId,
+      mountDirection: args.mountDirection,
+      splitDirection: args.splitDirection,
+      splitCwd: args.splitCwd,
+      workspaceId: args.workspaceId,
+      addDirection: args.addDirection,
+      agentName: args.agentName,
+      agentBin: args.agentBin,
+      agentArgs: args.agentArgs,
+      prompt: args.prompt,
+      submitDelay: args.submitDelay,
+      subscribe: args.subscribe,
+      snapshotDelay: args.snapshotDelay,
+    }),
+  },
+  onda_agent_wait: {
+    method: 'agent.wait',
+    mapParams: (args) => ({
+      sessionId: args.sessionId,
+      doneRegex: args.doneRegex,
+      timeoutMs: args.timeoutMs,
+      flags: args.flags,
+    }),
+  },
+  onda_agent_close: {
+    method: 'agent.close',
+    mapParams: (args) => ({
+      sessionId: args.sessionId,
+      terminalId: args.terminalId,
+      workspaceId: args.workspaceId,
+      killPty: args.killPty,
+      unmountWorkspace: args.unmountWorkspace,
+      closeWindow: args.closeWindow,
+      windowId: args.windowId,
+    }),
+  },
 
   // System (onda_context handled separately - it's local, not RPC)
   onda_status: { method: 'session.current' },

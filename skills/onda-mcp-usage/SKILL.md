@@ -2,22 +2,26 @@
 name: onda-mcp-usage
 description: Best practices for driving Onda (terminal emulator) from Claude Code via the `onda` MCP server (`mcp__onda__*`). Covers workspaces/windows/panes/terminals + buffer reading (read/subscribe/poll/wait_for/send_keys) + spatial awareness (layout/screenshot). Use whenever you call any `mcp__onda__*` tool or the user mentions Onda, pane, workspace, terminal listener, presence badge, inception loop (Claude controlling Onda from inside Onda). Triggers — onda mcp, drive onda, control onda terminal, show pane, workspace layout, onda screenshot, kai watcher, terminal listener.
 metadata:
-  version: 0.3.1
+  version: 0.4.0
   source: '@mindfullabai/onda-mcp'
 ---
 
 # Onda MCP usage skill
 
-This skill tells you **how to correctly use the `mcp__onda__*` tools** exposed by the `onda-mcp` server (~40 tools as of 0.3.1). It is installed alongside the MCP server. Without this guide you miss non-obvious patterns (subscribe vs read, direction semantics, multi-window orchestration, inception loop).
+This skill tells you **how to correctly use the `mcp__onda__*` tools** exposed by the `onda-mcp` server (~42 tools as of 0.4.0). It is installed alongside the MCP server. Without this guide you miss non-obvious patterns (subscribe vs read, direction semantics, multi-window orchestration, agent delegation atomic macro, inception loop).
 
 ## Compatibility note
 
-Some bug fixes shipped in `@mindfullabai/onda-mcp@0.3.1` + Onda 1.9.1+:
+New in `@mindfullabai/onda-mcp@0.4.0`:
+- **Agent delegation atomic macro**: `onda_agent_spawn` + `onda_agent_wait` + `onda_agent_close`. One-call composer for "session A delegates work to session B via Onda mosaic" — replaces the 6-step manual dance. Three placement modes (workspace / pane-split / same-workspace). See "Pattern: agent delegation" below.
+- The legacy `onda_launch_session` is now a backward-compat alias of `onda_agent_spawn` (same backend handler, v2-shape response).
+
+Bug fixes shipped in `@mindfullabai/onda-mcp@0.3.1` + Onda 1.9.1+:
 - `terminal_read` now returns the full buffer even on first call (eager tap attach at PTY spawn). Pre-0.3.1 a fresh terminal returned an empty buffer until `subscribe` was active.
 - `workspace_add_terminal` now respects `direction='down'` (was silently rewritten to `'row'` whenever the anchor was already in a row split).
 - `window_mount_workspace` now actually splices the workspace into the tiled mosaic (pre-fix the registry was updated but the UI tab/tile never appeared). Accepts `direction` ('down'|'right', default 'down') and `anchorWorkspaceId` mirroring the Cmd+P picker.
 
-If you are talking to an older host, fall back to the legacy patterns: subscribe before run, avoid direction='down' on add_terminal, click-mount via the user.
+If you are talking to an older host (Onda < 1.9.1), fall back to the legacy patterns: subscribe before run, avoid direction='down' on add_terminal, click-mount via the user. The `agent_spawn` tool will respond with `{error: "Unknown method"}` if the host pre-dates 0.4.0 — fall back to `onda_launch_session` in that case.
 
 ## Mental model
 
@@ -43,6 +47,9 @@ Internal workspace layout = mosaic-component tree. Read it via `onda_workspace_l
 | "Move workspace W from one window to another" | `onda_window_mount_workspace` with target `windowId` (atomic transfer, returns `transferred: true`) |
 | "Drop workspace from its window without deleting it" | `onda_workspace_unmount` (registry slot released, PTYs survive) |
 | "Bring a window to front" | `onda_window_focus` (omit `windowId` to focus primary) |
+| "Delegate task to another Claude session" | `onda_agent_spawn` (one call: create+mount+terminal+exec+subscribe) |
+| "Wait until the delegated agent reports done" | `onda_agent_wait` with `doneRegex` |
+| "Clean up after a delegation" | `onda_agent_close` (escalation: soft → kill → unmount → close window) |
 | "Read what the terminal has printed so far" | `onda_terminal_read` (no subscribe needed) |
 | "I want to receive every new output chunk" | `subscribe` + `poll` loop |
 | "Wait until the build finishes" | `onda_terminal_wait_for` with regex |
@@ -162,7 +169,55 @@ screenshot = window_screenshot(windowId, format="jpeg", quality=72, dataUrl=fals
 
 Default `dataUrl=true` returns inline base64 (~1-2 MB), `dataUrl=false` writes a tempfile that `Read` mounts as multimodal image — preferred to avoid wasting context.
 
-## Pattern: launching Claude Code in a pane (inception)
+## Pattern: agent delegation (PREFERRED, one-call)
+
+When you need to delegate work to another Claude session (or any TUI agent) — e.g. Alita @ work-hub asks Kai to refactor something in Orbit — use `onda_agent_spawn`. It is the **single atomic call** that composes create-or-locate workspace + mount + add terminal + exec bin + submit Enter + subscribe + snapshot. It replaces the 6-step manual dance and avoids the race conditions of doing it by hand.
+
+```
+# Delegate to Kai @ Orbit, full isolation (separate workspace as a new tile)
+spawn = agent_spawn(
+  placement="workspace",                       # create-or-locate + mount + add terminal
+  workspaceRootPath="~/Projects/04-Production/Orbit",
+  mountDirection="right",                      # splice the new tile to the right
+  agentName="kai-2026-05-23",                  # listener label in pane header
+  agentBin="claude",                           # default; any PATH binary works
+  agentArgs=["--dangerously-skip-permissions"],
+  prompt="/send kai brief: refactor Authenticator.swift; target test file Tests/AuthTests.swift; report # DONE when green",
+  subscribe=True,                              # default; returns sessionId
+)
+# → {sessionId, paneId, workspaceId, windowId, firstChunk, completedSteps:[...]}
+
+# Now wait for the agent to signal it is done
+result = agent_wait(
+  sessionId=spawn.sessionId,
+  doneRegex="^# DONE|^# BLOCKED",
+  timeoutMs=600000,                            # 10 min budget
+)
+# → {matched: True, match:"# DONE", tailContent: "...last 4KB..."}
+
+# Clean up. SOFT (default): unsubscribe only, leave the PTY alive so the
+# user can inspect. MEDIUM (+killPty + terminalId): terminate the agent.
+# HARD (+unmountWorkspace + workspaceId): drop the workspace tile.
+agent_close(sessionId=spawn.sessionId)
+```
+
+### Placement modes
+
+| Mode | When to use |
+|------|-------------|
+| `workspace` (default) | Long isolated delegation. New tile alongside yours in the same window. Survives across delegations. |
+| `pane-split` | Quick parallel work in the SAME workspace you're already in. The agent's cwd is `splitCwd`. Nothing to clean up at the workspace level. |
+| `same-workspace` | The target workspace is already mounted (`workspaceId`). Just add another terminal pane to it — useful when several agents share one repo. |
+
+### What `agent.spawn` does NOT do
+
+- **Protocol preamble**: the `prompt` field is sent verbatim (modulo shell-quote). If your team has agent-bus conventions like `# STATUS:`, `/send`, `# DONE` markers — compose them into the prompt yourself before calling. This is intentional: Onda stays opinion-free about agent communication semantics, the agent-bus skill is the source of truth for that vocabulary.
+- **Result aggregation**: `agent_wait` returns raw `tailContent`. Parsing structured output (extracting commit hashes, PR URLs, etc.) lives in the caller.
+- **Workspace limit handling**: in free/dev builds Onda caps at 2 workspaces. When the cap is reached `agent_spawn` returns `{success: false, errorCode: "workspace_limit_reached", needsUserAction: true, hint: "..."}` — surface that to the user, do not retry blindly.
+
+## Pattern: launching Claude Code in a pane (legacy, manual)
+
+Pre-`agent_spawn` (0.3.x and earlier) pattern. Still works, but verbose. New code should prefer the section above.
 
 ```
 pane = workspace_add_terminal(workspaceId="...", direction="right")
@@ -303,6 +358,7 @@ Con: prompt cache miss every 15 min (cache threshold 5 min), non-zero token cost
 3. **`workspace_add_terminal` without prior `workspace_layout`**: blind placement. Append-right quickly becomes unreadable.
 4. **Listener without unsubscribe**: leak for 30 min TTL. UI badge stays. Clean up.
 5. **`window_new`** when the user just wants "one more workspace on the right": NO. Use `window_mount_workspace(workspaceId, windowId=current, direction='right')` to splice it into the existing window as a side-by-side tile. Open a new window only when the user actually wants two separate windows.
+9. **Manual 6-step delegation dance** (`workspace_locate` → `workspace_create` → `window_mount_workspace` → `workspace_add_terminal` → `terminal_spawn` → `send_keys Enter` → `terminal_subscribe`): NO. Use `onda_agent_spawn` — it composes all of these atomically and avoids the race conditions where a fail mid-sequence leaves orphaned state.
 6. **Assuming `app_info.name === "Onda-dev"`** distinguishes dev vs prod: NO. Use `app_info.path` or an explicit flag.
 7. **`terminal_run` alone to submit a prompt to Claude TUI**: NO. The TUI treats `\n` as newline buffer. You must always follow with `send_keys(["Enter"])` to actually submit. (Validated 21 May 2026 spawning a dedicated Kai.)
 8. **Spawning Kai and then waiting for Mario to click and type**: anti-pattern. If you spawned the session, you drive it to "Kai is working" (pattern "drive a remote Claude Code session"). Mario shouldn't be a human postman in your agent team.
@@ -314,7 +370,7 @@ Con: prompt cache miss every 15 min (cache threshold 5 min), non-zero token cost
 - Onda uses a **single UDS socket**, `~/.config/onda/onda.sock`. Only one Onda instance answers MCP at a time (the first to bind). If `app_info` shows odd data, you may be talking to a different instance.
 - The MCP server holds the socket binding until the master Onda app exits — restarting Onda via Cmd+Q + relaunch is how you "promote" another instance to master.
 
-## Tool reference (38 total)
+## Tool reference (~42 total)
 
 Application:
 - `onda_app_info` — version, pid, paths
@@ -364,7 +420,12 @@ Terminal (read/listen plane, M+1 2026-05-21):
 
 Session:
 - `onda_session_current` — current CLI consumer session
-- `onda_launchSession` — atomic macro "open workspace + add terminal + spawn bin"
+- `onda_launch_session` — atomic macro "open workspace + add terminal + spawn bin" (DEPRECATED, use `onda_agent_spawn`)
+
+Agent delegation (preferred since 0.4.0):
+- `onda_agent_spawn` — one-call atomic delegation: locate-or-create workspace, mount, add terminal, exec bin, optionally Enter-submit, subscribe; returns `sessionId` + `firstChunk` snapshot. Three placement modes (workspace / pane-split / same-workspace).
+- `onda_agent_wait` — block on a subscriber session until `doneRegex` matches; returns the matched chunk and the tail content for downstream parsing.
+- `onda_agent_close` — escalation cleanup: unsubscribe → kill PTY → unmount workspace → close window. Each step opt-in via boolean flags.
 
 ## Versioning
 
