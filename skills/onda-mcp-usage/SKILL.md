@@ -2,13 +2,22 @@
 name: onda-mcp-usage
 description: Best practices for driving Onda (terminal emulator) from Claude Code via the `onda` MCP server (`mcp__onda__*`). Covers workspaces/windows/panes/terminals + buffer reading (read/subscribe/poll/wait_for/send_keys) + spatial awareness (layout/screenshot). Use whenever you call any `mcp__onda__*` tool or the user mentions Onda, pane, workspace, terminal listener, presence badge, inception loop (Claude controlling Onda from inside Onda). Triggers — onda mcp, drive onda, control onda terminal, show pane, workspace layout, onda screenshot, kai watcher, terminal listener.
 metadata:
-  version: 0.2.0
+  version: 0.3.1
   source: '@mindfullabai/onda-mcp'
 ---
 
 # Onda MCP usage skill
 
-This skill tells you **how to correctly use the 38 `mcp__onda__*` tools** exposed by the `onda-mcp` server. It is installed alongside the MCP server. Without this guide you hit non-obvious pitfalls (subscribe AFTER run loses output, `down`/`right` mapping inverted pre-fix, UI cache refresh).
+This skill tells you **how to correctly use the `mcp__onda__*` tools** exposed by the `onda-mcp` server (~40 tools as of 0.3.1). It is installed alongside the MCP server. Without this guide you miss non-obvious patterns (subscribe vs read, direction semantics, multi-window orchestration, inception loop).
+
+## Compatibility note
+
+Some bug fixes shipped in `@mindfullabai/onda-mcp@0.3.1` + Onda 1.9.1+:
+- `terminal_read` now returns the full buffer even on first call (eager tap attach at PTY spawn). Pre-0.3.1 a fresh terminal returned an empty buffer until `subscribe` was active.
+- `workspace_add_terminal` now respects `direction='down'` (was silently rewritten to `'row'` whenever the anchor was already in a row split).
+- `window_mount_workspace` now actually splices the workspace into the tiled mosaic (pre-fix the registry was updated but the UI tab/tile never appeared). Accepts `direction` ('down'|'right', default 'down') and `anchorWorkspaceId` mirroring the Cmd+P picker.
+
+If you are talking to an older host, fall back to the legacy patterns: subscribe before run, avoid direction='down' on add_terminal, click-mount via the user.
 
 ## Mental model
 
@@ -30,6 +39,10 @@ Internal workspace layout = mosaic-component tree. Read it via `onda_workspace_l
 | "How is workspace X laid out" | `onda_workspace_layout` |
 | "I want to see what the user sees" | `onda_window_screenshot` |
 | "Open a new terminal right/below pane X" | `onda_workspace_add_terminal` with `direction` + `relativeToPaneId` |
+| "Mount workspace W in window X as a new tile" | `onda_window_mount_workspace` with `windowId` + `direction` ('down' or 'right') |
+| "Move workspace W from one window to another" | `onda_window_mount_workspace` with target `windowId` (atomic transfer, returns `transferred: true`) |
+| "Drop workspace from its window without deleting it" | `onda_workspace_unmount` (registry slot released, PTYs survive) |
+| "Bring a window to front" | `onda_window_focus` (omit `windowId` to focus primary) |
 | "Read what the terminal has printed so far" | `onda_terminal_read` (no subscribe needed) |
 | "I want to receive every new output chunk" | `subscribe` + `poll` loop |
 | "Wait until the build finishes" | `onda_terminal_wait_for` with regex |
@@ -40,16 +53,18 @@ Internal workspace layout = mosaic-component tree. Read it via `onda_workspace_l
 
 ## Pattern: working with terminal buffer (reads)
 
-**Anti-pattern**: call `terminal.run` and THEN `terminal.read`. The tap is created lazily on first `read`/`subscribe`, and PTY data emitted before the tap exists is **lost**.
+Onda 1.9.1+ attaches the MCP tap **eagerly at PTY spawn**, so `terminal_read` and `subscribe.bufferSnapshot` return the full history regardless of when you first ask. The pre-0.3.1 anti-pattern (subscribe-before-run) is no longer required for correctness.
 
 ```
-✗ run → read   (you lose the run's output)
-✓ read|subscribe → run → read|poll  (captures everything)
+✓ run → read                       (run + check, works post-fix)
+✓ subscribe → run → poll loop      (live streaming + history snapshot)
+✓ wait_for(pattern)                (synchronize on a substring)
 ```
 
 Ring buffer size:
-- **200 KB** when no listener (`read`-only mode)
-- **1 MB** when at least one `subscribe` is active
+- **200 KB** when no listener is attached (`read`-only mode)
+- **1 MB** when at least one `subscribe` is active (auto-promoted)
+- Shrinks back to 200 KB after the last `unsubscribe`, without losing the tap
 
 For high-throughput output (`find /`, `tail -F` on logs) the ring saturates. Use `wait_for` with a precise pattern instead of subscribe + scan.
 
@@ -105,6 +120,36 @@ new = workspace_add_terminal(workspaceId,
 - `vertical` = side-by-side (synonym of `right`)
 
 Use `down` when the new pane will emit continuous output (logs, build). Use `right` for parallel work terminals.
+
+## Pattern: multi-window mosaic orchestration
+
+A workspace lives in **at most one window at a time**. `window_mount_workspace` is idempotent and handles three cases:
+
+```
+1. Workspace unmounted  → direct claim into target window (transferred: false)
+2. Already in target     → no-op (transferred: false)
+3. Mounted elsewhere     → atomic transfer via unmount-request/ack (transferred: true)
+```
+
+```
+# Setup: workspace X visible as a tile under the current window
+window_mount_workspace(workspaceId=X, windowId=current, direction="down")
+
+# Move workspace X to a fresh window
+new_id = window_new().windowId
+window_mount_workspace(workspaceId=X, windowId=new_id, direction="down")
+# returns { transferred: true }
+window_focus(new_id)  # bring the new window to front
+```
+
+`direction` mirrors the Cmd+P picker semantics: `down` = stack below the anchor workspace (Enter), `right` = side-by-side (Cmd+Enter). `anchorWorkspaceId` lets you pick which existing tile to split next to; default is the target window's current active workspace.
+
+To drop a workspace from its window without destroying it:
+```
+workspace_unmount(workspaceId=X)
+# registry slot freed, workspace still exists in global list
+# PTYs inside it stay alive (orphaned terminals) until kill or app restart
+```
 
 ## Pattern: visual verification
 
@@ -257,7 +302,7 @@ Con: prompt cache miss every 15 min (cache threshold 5 min), non-zero token cost
 2. **`terminal_send` with raw bytes** (`"\x03"` for Ctrl+C): nope. Use `send_keys(["Ctrl+C"])`.
 3. **`workspace_add_terminal` without prior `workspace_layout`**: blind placement. Append-right quickly becomes unreadable.
 4. **Listener without unsubscribe**: leak for 30 min TTL. UI badge stays. Clean up.
-5. **`window_new`** when the user just wants "one more workspace on the right": NO — the user prefers **mounting the workspace as a tile in the existing window** (today the MCP tool for this is missing → use manual click flow with `tell me when you clicked`).
+5. **`window_new`** when the user just wants "one more workspace on the right": NO. Use `window_mount_workspace(workspaceId, windowId=current, direction='right')` to splice it into the existing window as a side-by-side tile. Open a new window only when the user actually wants two separate windows.
 6. **Assuming `app_info.name === "Onda-dev"`** distinguishes dev vs prod: NO. Use `app_info.path` or an explicit flag.
 7. **`terminal_run` alone to submit a prompt to Claude TUI**: NO. The TUI treats `\n` as newline buffer. You must always follow with `send_keys(["Enter"])` to actually submit. (Validated 21 May 2026 spawning a dedicated Kai.)
 8. **Spawning Kai and then waiting for Mario to click and type**: anti-pattern. If you spawned the session, you drive it to "Kai is working" (pattern "drive a remote Claude Code session"). Mario shouldn't be a human postman in your agent team.
