@@ -2,22 +2,30 @@
 name: onda-mcp-usage
 description: Best practices for driving Onda (terminal emulator) from Claude Code via the `onda` MCP server (`mcp__onda__*`). Covers workspaces/windows/panes/terminals + buffer reading (read/subscribe/poll/wait_for/send_keys) + spatial awareness (layout/screenshot). Use whenever you call any `mcp__onda__*` tool or the user mentions Onda, pane, workspace, terminal listener, presence badge, inception loop (Claude controlling Onda from inside Onda). Triggers — onda mcp, drive onda, control onda terminal, show pane, workspace layout, onda screenshot, kai watcher, terminal listener.
 metadata:
-  version: 0.3.1
+  version: 0.5.0
   source: '@mindfullabai/onda-mcp'
 ---
 
 # Onda MCP usage skill
 
-This skill tells you **how to correctly use the `mcp__onda__*` tools** exposed by the `onda-mcp` server (~40 tools as of 0.3.1). It is installed alongside the MCP server. Without this guide you miss non-obvious patterns (subscribe vs read, direction semantics, multi-window orchestration, inception loop).
+This skill tells you **how to correctly use the `mcp__onda__*` tools** exposed by the `onda-mcp` server (~42 tools as of 0.4.0). It is installed alongside the MCP server. Without this guide you miss non-obvious patterns (subscribe vs read, direction semantics, multi-window orchestration, agent delegation atomic macro, inception loop).
 
 ## Compatibility note
 
-Some bug fixes shipped in `@mindfullabai/onda-mcp@0.3.1` + Onda 1.9.1+:
+Breaking change in `@mindfullabai/onda-mcp@0.5.0`:
+- `onda_agent_spawn` no longer accepts a `prompt` argument. Prompt delivery is now a separate call, `onda_agent_prompt`, gated on a `readyPattern` sync. See "Pattern: agent delegation" below for the new four-tool flow. The split makes the pipeline resilient against TUI cold-start race conditions (trust dialog, splash screen, model picker) that previously caused the Enter keystroke to land on the wrong control.
+- `submitDelay` is removed from `onda_agent_spawn` (the spawn never auto-submits anymore). Use `agent_prompt` with `preWriteDelay` if you really need a beat between ready-sync and the write.
+- The legacy `onda_launch_session` is unchanged and still accepts the v2 `prompt` argv + auto-submit semantics; use it if you have existing callers you don't want to touch.
+
+New in `@mindfullabai/onda-mcp@0.4.0`:
+- **Agent delegation tools**: `onda_agent_spawn` + `onda_agent_wait` + `onda_agent_close` (0.5.0 added `onda_agent_prompt`). Replaces the 6-step manual dance. Three placement modes (workspace / pane-split / same-workspace).
+
+Bug fixes shipped in `@mindfullabai/onda-mcp@0.3.1` + Onda 1.9.1+:
 - `terminal_read` now returns the full buffer even on first call (eager tap attach at PTY spawn). Pre-0.3.1 a fresh terminal returned an empty buffer until `subscribe` was active.
 - `workspace_add_terminal` now respects `direction='down'` (was silently rewritten to `'row'` whenever the anchor was already in a row split).
 - `window_mount_workspace` now actually splices the workspace into the tiled mosaic (pre-fix the registry was updated but the UI tab/tile never appeared). Accepts `direction` ('down'|'right', default 'down') and `anchorWorkspaceId` mirroring the Cmd+P picker.
 
-If you are talking to an older host, fall back to the legacy patterns: subscribe before run, avoid direction='down' on add_terminal, click-mount via the user.
+If you are talking to an older host (Onda < 1.9.1), fall back to the legacy patterns: subscribe before run, avoid direction='down' on add_terminal, click-mount via the user. The `agent_spawn` tool will respond with `{error: "Unknown method"}` if the host pre-dates 0.4.0 — fall back to `onda_launch_session` in that case.
 
 ## Mental model
 
@@ -43,6 +51,10 @@ Internal workspace layout = mosaic-component tree. Read it via `onda_workspace_l
 | "Move workspace W from one window to another" | `onda_window_mount_workspace` with target `windowId` (atomic transfer, returns `transferred: true`) |
 | "Drop workspace from its window without deleting it" | `onda_workspace_unmount` (registry slot released, PTYs survive) |
 | "Bring a window to front" | `onda_window_focus` (omit `windowId` to focus primary) |
+| "Boot an agent in a workspace" | `onda_agent_spawn` (mount + add terminal + exec bin + readyPattern sync) |
+| "Submit a task prompt to a TUI agent" | `onda_agent_prompt` (after spawn returned ready:true) |
+| "Wait until the delegated agent reports done" | `onda_agent_wait` with `doneRegex` |
+| "Clean up after a delegation" | `onda_agent_close` (escalation: soft → kill → unmount → close window) |
 | "Read what the terminal has printed so far" | `onda_terminal_read` (no subscribe needed) |
 | "I want to receive every new output chunk" | `subscribe` + `poll` loop |
 | "Wait until the build finishes" | `onda_terminal_wait_for` with regex |
@@ -162,7 +174,121 @@ screenshot = window_screenshot(windowId, format="jpeg", quality=72, dataUrl=fals
 
 Default `dataUrl=true` returns inline base64 (~1-2 MB), `dataUrl=false` writes a tempfile that `Read` mounts as multimodal image — preferred to avoid wasting context.
 
-## Pattern: launching Claude Code in a pane (inception)
+## Pattern: agent delegation (PREFERRED, two-call for TUIs)
+
+When you need to delegate work to another Claude session (or any TUI agent) — e.g. Alita @ work-hub asks Kai to refactor something in Orbit — use the four-tool flow: `onda_agent_spawn` → `onda_agent_prompt` → `onda_agent_wait` → `onda_agent_close`. The first two are the meat; `wait` and `close` are observation + cleanup.
+
+The flow is **split into spawn + prompt** intentionally. Booting a TUI like Claude costs 5-10s and runs through several transient states (trust dialog → splash → welcome → textbox). Submitting the prompt while the TUI is still in trust dialog state means the Enter goes to the dialog, not your prompt. Splitting the two phases gives you a sync point (`readyPattern`) and lets you retry just the prompt if delivery fails, without re-paying the cold start.
+
+```
+# 1. Spawn (boot only — no prompt yet)
+spawn = agent_spawn(
+  placement="workspace",                       # create-or-locate workspace + mount + add terminal
+  workspaceRootPath="~/Projects/04-Production/Orbit",
+  mountDirection="right",                      # splice the new tile to the right
+  agentName="kai-2026-05-23",                  # listener label in pane header
+  agentBin="claude",
+  agentArgs=["--dangerously-skip-permissions"], # flags only, NOT the task prompt
+  readyPattern="❯|Welcome back|Try \"",        # block until Claude TUI textbox is up
+  readyTimeoutMs=20000,                        # generous: Claude cold-start
+  subscribe=True,                              # default; returns sessionId for agent_wait
+)
+# → {sessionId, terminalId, paneId, workspaceId, windowId, ready: True, firstChunk, completedSteps:[...,'ready_sync']}
+
+if not spawn.ready:
+    # readyPattern didn't match — TUI is in an unexpected state.
+    # Inspect spawn.firstChunk to see where it got stuck (trust dialog?
+    # model picker? bin not found?). Decide whether to retry, send keystrokes
+    # to navigate the dialog, or give up and call agent_close.
+    ...
+
+# 2. Submit the task prompt
+agent_prompt(
+  terminalId=spawn.terminalId,
+  prompt="/send kai brief: refactor Authenticator.swift; target test file Tests/AuthTests.swift; report '# DONE' on its own line when green",
+  submitWith="enter",                          # default; press Enter to submit
+)
+# → {success: True, bytesWritten, completedSteps:['write','submit']}
+
+# 3. Wait for the agent to signal completion
+result = agent_wait(
+  sessionId=spawn.sessionId,
+  doneRegex="DONE|BLOCKED",                    # see "doneRegex pattern" below
+  timeoutMs=15000,                              # short window, loop if needed
+  timeoutMs=600000,                            # 10 min budget
+)
+# → {matched: True, match: "# DONE", tailContent: "...last 4KB..."}
+
+# 4. Clean up. SOFT (default): unsubscribe only, leave the PTY alive so the
+#    user can inspect. MEDIUM (+killPty + terminalId): terminate the agent.
+#    HARD (+unmountWorkspace + workspaceId): drop the workspace tile.
+agent_close(sessionId=spawn.sessionId)
+```
+
+### doneRegex pattern: match across renderers
+
+Don't be too literal with `# DONE`. TUI agents re-render markdown: Claude turns `# DONE` into a styled bullet `⏺ DONE` (with bold + italic + underline ANSI), qwen prefixes timestamps, codex may emit `[DONE]`. Pick a pattern that survives the visual layer.
+
+Recommended generic patterns for delegated agents:
+
+```
+# Most resilient — matches DONE/BLOCKED regardless of bullet, prefix, or styling
+doneRegex = "(DONE|BLOCKED|FAILED|ERROR)\\b"
+
+# Conservative — matches the literal sentinel words preceded by whitespace, bullet, or markdown header
+doneRegex = "(^|\\s|[#⏺\\-\\*•])\\s*(DONE|BLOCKED|FAILED)\\b"
+
+# Strict — your team enforces "# DONE" / "# BLOCKED" exactly (works when the agent runs in a non-TUI shell, e.g. bash one-shot)
+doneRegex = "^# (DONE|BLOCKED)"
+```
+
+For Claude TUI specifically, the markdown `# DONE` in the agent's reply becomes `⏺ DONE` on screen. The bullet glyph `⏺` (U+23FA) is the most reliable marker because Claude always renders it before H1 sentinels. Combined patterns work well: `"(⏺|^|^#)\\s*DONE"`.
+
+### Long-running tasks: chunked polling
+
+`agent_wait` blocks server-side until the regex matches or `timeoutMs` elapses. **But the MCP JSON-RPC client has its own timeout (~60s)**: a single `agent_wait(timeoutMs=300000)` call will fail client-side with "Connection timeout" long before the backend would have returned, even if the agent eventually completes in time.
+
+For any task likely to take >30s, do **chunked polling**: loop with a short timeout, check `matched`, repeat until done or your budget is spent.
+
+```
+budget = 600  # 10 minutes
+elapsed = 0
+while elapsed < budget:
+    r = agent_wait(sessionId, doneRegex=..., timeoutMs=15000)
+    if r.matched:
+        break
+    elapsed += 15
+else:
+    # timed out
+    ...
+```
+
+The session cursor advances on each poll, so you don't re-scan bytes from the previous loop iteration; only new emissions are evaluated.
+
+### Why split spawn + prompt?
+
+Concretely: the alternative (single `agent_spawn` call that also submits the prompt) was tried — `claude --prompt` as argv mostly works for short prompts, but a multi-line / long prompt can land in the textbox while the trust dialog is still active, and the Enter goes to the dialog instead of submitting. The split flow has two side benefits:
+
+1. **Retry-on-failure is cheap**: if `agent_prompt` reports `errorCode: "not_ready"`, you re-call `agent_prompt` (potentially after `terminal_read` to see what's blocking) without ever touching the PTY-spawn cost.
+2. **TUI navigation between phases**: occasionally claude shows a model picker or "select profile" screen before the textbox. Between `agent_spawn` (which can target `readyPattern="select profile"`) and `agent_prompt`, the caller can send `send_keys(["Enter"])` to dismiss it, then proceed.
+
+### Placement modes
+
+| Mode | When to use |
+|------|-------------|
+| `workspace` (default) | Long isolated delegation. New tile alongside yours in the same window. Survives across delegations. |
+| `pane-split` | Quick parallel work in the SAME workspace you're already in. The agent's cwd is `splitCwd`. Nothing to clean up at the workspace level. |
+| `same-workspace` | The target workspace is already mounted (`workspaceId`). Just add another terminal pane to it — useful when several agents share one repo. |
+
+### What `agent.spawn` does NOT do
+
+- **Protocol preamble**: the `prompt` field is sent verbatim (modulo shell-quote). If your team has agent-bus conventions like `# STATUS:`, `/send`, `# DONE` markers — compose them into the prompt yourself before calling. This is intentional: Onda stays opinion-free about agent communication semantics, the agent-bus skill is the source of truth for that vocabulary.
+- **Result aggregation**: `agent_wait` returns raw `tailContent`. Parsing structured output (extracting commit hashes, PR URLs, etc.) lives in the caller.
+- **Workspace limit handling**: in free/dev builds Onda caps at 2 workspaces. When the cap is reached `agent_spawn` returns `{success: false, errorCode: "workspace_limit_reached", needsUserAction: true, hint: "..."}` — surface that to the user, do not retry blindly.
+
+## Pattern: launching Claude Code in a pane (legacy, manual)
+
+Pre-`agent_spawn` (0.3.x and earlier) pattern. Still works, but verbose. New code should prefer the section above.
 
 ```
 pane = workspace_add_terminal(workspaceId="...", direction="right")
@@ -303,6 +429,7 @@ Con: prompt cache miss every 15 min (cache threshold 5 min), non-zero token cost
 3. **`workspace_add_terminal` without prior `workspace_layout`**: blind placement. Append-right quickly becomes unreadable.
 4. **Listener without unsubscribe**: leak for 30 min TTL. UI badge stays. Clean up.
 5. **`window_new`** when the user just wants "one more workspace on the right": NO. Use `window_mount_workspace(workspaceId, windowId=current, direction='right')` to splice it into the existing window as a side-by-side tile. Open a new window only when the user actually wants two separate windows.
+9. **Manual 6-step delegation dance** (`workspace_locate` → `workspace_create` → `window_mount_workspace` → `workspace_add_terminal` → `terminal_spawn` → `send_keys Enter` → `terminal_subscribe`): NO. Use `onda_agent_spawn` — it composes all of these atomically and avoids the race conditions where a fail mid-sequence leaves orphaned state.
 6. **Assuming `app_info.name === "Onda-dev"`** distinguishes dev vs prod: NO. Use `app_info.path` or an explicit flag.
 7. **`terminal_run` alone to submit a prompt to Claude TUI**: NO. The TUI treats `\n` as newline buffer. You must always follow with `send_keys(["Enter"])` to actually submit. (Validated 21 May 2026 spawning a dedicated Kai.)
 8. **Spawning Kai and then waiting for Mario to click and type**: anti-pattern. If you spawned the session, you drive it to "Kai is working" (pattern "drive a remote Claude Code session"). Mario shouldn't be a human postman in your agent team.
@@ -314,7 +441,7 @@ Con: prompt cache miss every 15 min (cache threshold 5 min), non-zero token cost
 - Onda uses a **single UDS socket**, `~/.config/onda/onda.sock`. Only one Onda instance answers MCP at a time (the first to bind). If `app_info` shows odd data, you may be talking to a different instance.
 - The MCP server holds the socket binding until the master Onda app exits — restarting Onda via Cmd+Q + relaunch is how you "promote" another instance to master.
 
-## Tool reference (38 total)
+## Tool reference (~42 total)
 
 Application:
 - `onda_app_info` — version, pid, paths
@@ -364,7 +491,13 @@ Terminal (read/listen plane, M+1 2026-05-21):
 
 Session:
 - `onda_session_current` — current CLI consumer session
-- `onda_launchSession` — atomic macro "open workspace + add terminal + spawn bin"
+- `onda_launch_session` — atomic macro "open workspace + add terminal + spawn bin" (DEPRECATED, use `onda_agent_spawn`)
+
+Agent delegation (preferred since 0.4.0, split into spawn+prompt in 0.5.0):
+- `onda_agent_spawn` — boot an agent in a workspace+pane and return when `readyPattern` matches (or timeout). Returns `sessionId` + `firstChunk`. Does NOT submit a prompt.
+- `onda_agent_prompt` — write a prompt into the spawned agent's TUI textbox and submit it. Has its own optional `readyPattern` defensive sync.
+- `onda_agent_wait` — block on the spawned agent's sessionId until `doneRegex` matches; returns matched chunk + tail content.
+- `onda_agent_close` — escalation cleanup: unsubscribe → kill PTY → unmount workspace → close window. Each step opt-in via boolean flags.
 
 ## Versioning
 

@@ -632,6 +632,200 @@ const TOOLS = [
     },
   },
 
+  // --- Agent delegation (preferred over onda_launch_session) ---
+  // These three tools (`spawn` / `wait` / `close`) are the canonical
+  // entry points for "Claude session A delegates work to Claude session
+  // B via Onda mosaic". They expose the same composer pipeline as the
+  // legacy onda_launch_session but with three improvements:
+  //   1. Three placement modes (workspace / pane-split / same-workspace)
+  //      so the caller can decide whether to splice a new tile, split a
+  //      pane in the current workspace, or just add a terminal to an
+  //      already-mounted workspace.
+  //   2. The mount path goes through the post-fix `mountWorkspaceInTile`
+  //      flow, so the tile actually appears in the UI (the legacy
+  //      launchSession path only set the active workspace, which after
+  //      the B1 fix in Onda 1.9.1 was no longer enough on its own).
+  //   3. Optional `subscribe + sessionId` so the caller can immediately
+  //      hand the sessionId to `onda_agent_wait` without a separate
+  //      `terminal_subscribe` round-trip.
+  //
+  // The legacy `onda_launch_session` tool still works (it maps to the
+  // same backend handler) but is kept only for backward compatibility.
+  // New code should prefer `onda_agent_spawn`.
+  {
+    name: 'onda_agent_spawn',
+    description:
+      'Boot an agent in a workspace+pane and return once the TUI is ready to accept a prompt. Does NOT submit a task — use `onda_agent_prompt` after spawn for that. Splitting bootstrap and prompt delivery makes the flow resilient: you can retry the prompt without re-paying the agent cold-start (5-10s for Claude), and you can intercept unexpected TUI states (trust dialog, model picker) between the two steps. Placement modes: "workspace" (default — full create+mount+add), "pane-split" (split active pane of current workspace), "same-workspace" (add a terminal to an already-mounted workspace). For non-TUI binaries (bash, scripts), pass the full command in `agentArgs` and use `execMode: "run"`; `onda_agent_prompt` is then unnecessary.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        placement: {
+          type: 'string',
+          enum: ['workspace', 'pane-split', 'same-workspace'],
+          description: 'Where to host the new agent terminal. Default "workspace": create-or-locate workspace + mount + add terminal. "pane-split": split the active pane of the focused workspace. "same-workspace": add a terminal pane to an existing mounted workspace (requires `workspaceId`).',
+        },
+        // --- placement=workspace ---
+        workspaceRootPath: {
+          type: 'string',
+          description: 'placement=workspace: filesystem path used to locate (or create) the workspace. If the workspace does not exist and rootPath is set, it will be auto-created (name = basename of rootPath unless `workspaceName` is given).',
+        },
+        workspaceName: {
+          type: 'string',
+          description: 'placement=workspace: optional override for the auto-created workspace name. Ignored if a workspace already matches `workspaceRootPath`.',
+        },
+        targetWindowId: {
+          type: 'string',
+          description: 'placement=workspace: window to mount the workspace in. Default: focused window.',
+        },
+        mountDirection: {
+          type: 'string',
+          enum: ['down', 'right'],
+          description: 'placement=workspace: where to splice the new tile in the mosaic. Default "down" (matches the Cmd+P picker default).',
+        },
+        // --- placement=pane-split ---
+        splitDirection: {
+          type: 'string',
+          enum: ['right', 'down', 'left', 'up', 'horizontal', 'vertical'],
+          description: 'placement=pane-split: how to split the active pane. Default "down".',
+        },
+        splitCwd: {
+          type: 'string',
+          description: 'placement=pane-split: cwd of the new pane (typically the project root the delegated agent should work in).',
+        },
+        // --- placement=same-workspace ---
+        workspaceId: {
+          type: 'string',
+          description: 'placement=same-workspace: id of an already-mounted workspace to add a terminal to.',
+        },
+        addDirection: {
+          type: 'string',
+          enum: ['right', 'down'],
+          description: 'placement=same-workspace: split direction for the new pane. Default "down".',
+        },
+        // --- universal ---
+        agentName: {
+          type: 'string',
+          description: 'Listener label shown in the pane header (e.g. "kai-2026-05-23"). Recommended: include a date or session identifier so the user can tell concurrent delegations apart.',
+        },
+        agentBin: {
+          type: 'string',
+          description: 'Binary to exec inside the pane. Default "claude". Any PATH-resolvable executable works (claude, qwen, codex, bash, etc.).',
+        },
+        agentArgs: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Extra argv entries appended after the binary. For TUI agents (claude/qwen): use flags only (e.g. ["--dangerously-skip-permissions"]) — DO NOT include the task prompt here; submit it separately via onda_agent_prompt once readyPattern has matched. For non-TUI bins (bash/sh): include the full command line, e.g. ["-lc", "build.sh && echo DONE"].',
+        },
+        execMode: {
+          type: 'string',
+          enum: ['exec', 'run'],
+          description: 'How to hand the binary to the pane\'s existing shell. Default "exec": writes `exec bin args` so the binary REPLACES the shell (right for long-lived TUI agents like claude/qwen — they own the pane, no shell prompt visible). Set to "run" for one-shot commands (build, script, quick check): writes `bin args` plainly, the shell runs it as a child and re-prompts when done, so the PTY stays alive and `agent.wait` subscribers survive even for short tasks. Wrong choice for short tasks under "exec" causes the PTY to exit the moment the command completes, wiping any pending wait subscriber.',
+        },
+        readyPattern: {
+          type: 'string',
+          description: 'JavaScript regex (string form). When set, agent.spawn blocks until the pattern matches new output before returning. Use it to synchronize on "TUI is ready for a prompt" — for Claude TUI a good default is "❯|Welcome back|Try \\"|bypass permissions"; for qwen "qwen>|Ready"; for bash this is unnecessary. The response includes `ready: true` on match, `ready: false` on timeout (caller decides whether to proceed).',
+        },
+        readyTimeoutMs: {
+          type: 'number',
+          description: 'Max wait for readyPattern in ms. Default 15000 (15s — enough for Claude cold-start on a busy machine).',
+        },
+        subscribe: {
+          type: 'boolean',
+          description: 'Attach a listener and return a `sessionId` ready for `onda_agent_wait`. Default true. Also lights up the presence badge in the pane header.',
+        },
+        snapshotDelay: {
+          type: 'number',
+          description: 'Milliseconds to wait before reading the first chunk of buffer for the `firstChunk` field in the response. Default 500. Set to 0 to skip the snapshot. Ignored if readyPattern matched and provided a sync point already.',
+        },
+      },
+      required: ['agentBin'],
+    },
+  },
+  {
+    name: 'onda_agent_prompt',
+    description:
+      'Submit a task prompt to an agent that was previously spawned with `onda_agent_spawn`. Use this once `onda_agent_spawn` has returned with `ready: true` (TUI textbox is up and accepting keystrokes). Writes the prompt as raw text into the PTY, then optionally sends Enter to submit. Idempotent in the sense that you can call it multiple times — useful for multi-line drafts (each call with `submitWith: "none"` except the last) or for retry-on-blocker scenarios.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        terminalId: {
+          type: 'string',
+          description: 'Terminal id from `onda_agent_spawn` response (paneId === terminalId for terminal-content panes).',
+        },
+        prompt: {
+          type: 'string',
+          description: 'The text to write. For TUI agents this populates the textbox. No shell-quoting — the caller talks to a TUI, not a shell. Caller is responsible for any agent-bus preamble (e.g. "# STATUS:", "# DONE" sentinels, "/send kai brief: ..." vocabulary). Onda stays opinion-free about protocol semantics.',
+        },
+        submitWith: {
+          type: 'string',
+          enum: ['enter', 'none'],
+          description: 'How to submit the prompt. "enter" (default) writes a CR after the text — this is what most TUIs need to actually submit. "none" leaves the text in the buffer without submitting; use this when chaining multiple writes (e.g. multi-line draft, each call writing one line with submitWith=none, the final one with submitWith=enter).',
+        },
+        readyPattern: {
+          type: 'string',
+          description: 'Optional defensive ready-sync regex. If provided, `agent.prompt` first runs a quick `waitForPattern` (default 5s timeout) before writing. Cheap when the buffer already matches; safety net when the caller is racing TUI cold-start. Generally redundant if `agent.spawn` already synced on the same pattern.',
+        },
+        readyTimeoutMs: {
+          type: 'number',
+          description: 'Max wait for `readyPattern` in ms. Default 5000.',
+        },
+        preWriteDelay: {
+          type: 'number',
+          description: 'Optional ms delay between ready-sync and the actual write. Some TUIs need a beat to finish layout transitions even after the textbox is technically present.',
+        },
+        postSubmitDelay: {
+          type: 'number',
+          description: 'Optional ms delay after sending Enter, before returning. Useful if you want to give the agent a moment to start streaming output that the next caller-side step (terminal_read snapshot, agent_wait) will need.',
+        },
+      },
+      required: ['terminalId', 'prompt'],
+    },
+  },
+  {
+    name: 'onda_agent_wait',
+    description:
+      'Block on a subscriber session until a regex matches new terminal output, or timeout. Use this after `onda_agent_spawn` to wait for a sentinel pattern that indicates the delegated agent is done (or has hit a blocker). Returns { matched, match?, bufferedChunks, tailContent? } where tailContent is the last ~4KB of accumulated output (useful for surfacing a summary to the user or for debugging mismatched expectations).',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        sessionId: {
+          type: 'string',
+          description: 'Session id returned by `onda_agent_spawn` (or by a manual `onda_terminal_subscribe`).',
+        },
+        doneRegex: {
+          type: 'string',
+          description: 'JavaScript regex (string form). Default matches `^# DONE`, `^# BLOCKED`, or `Esc to interrupt`. Pick a sentinel that matches whatever the agent-bus protocol used by your team prescribes.',
+        },
+        timeoutMs: {
+          type: 'number',
+          description: 'Max wait in ms. Default 300000 (5 min). Cap to whatever your task complexity warrants.',
+        },
+        flags: {
+          type: 'string',
+          description: 'Regex flags. Default "m" (multiline).',
+        },
+      },
+      required: ['sessionId'],
+    },
+  },
+  {
+    name: 'onda_agent_close',
+    description:
+      'Escalation cleanup after an agent finishes (or to abandon a delegation). Three levels: SOFT — only `sessionId` set → unsubscribe (keeps PTY alive, lets you reattach or let the user inspect). MEDIUM — `+ killPty + terminalId` → terminates the agent process. HARD — `+ unmountWorkspace + workspaceId` (and optionally `+ closeWindow + windowId`) → full teardown of an ephemeral delegation. All fields are optional; the tool does only what you ask.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        sessionId: { type: 'string', description: 'Subscriber session to detach. Idempotent.' },
+        terminalId: { type: 'string', description: 'Terminal to kill. Required when `killPty` is true.' },
+        workspaceId: { type: 'string', description: 'Workspace to unmount. Required when `unmountWorkspace` is true.' },
+        killPty: { type: 'boolean', description: 'Default false. When true, the underlying PTY process is terminated (UI shows [Process exited]).' },
+        unmountWorkspace: { type: 'boolean', description: 'Default false. When true, the workspace is dropped from its window\'s mosaic. The workspace itself still exists in the global list.' },
+        closeWindow: { type: 'boolean', description: 'Default false. When true, the host window is closed via `BrowserWindow.close()`. Requires `windowId`. Only use when YOU spawned this window via `onda_window_new`.' },
+        windowId: { type: 'string', description: 'Required when `closeWindow` is true.' },
+      },
+    },
+  },
+
   // --- System ---
   {
     name: 'onda_context',
@@ -662,6 +856,93 @@ const TOOLS = [
   {
     name: 'onda_ping',
     description: 'Health check - verify Onda is running and responsive.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {},
+    },
+  },
+
+  // ─── Workflow Canvas orchestration (F2.3) ───
+  // Build and run a visual pipeline where each node is a headless `claude -p`
+  // session, chained output→input. Use these to compose a multi-step Claude
+  // pipeline programmatically instead of doing every step yourself in one
+  // session — e.g. "generate options → critique → pick best → implement".
+  {
+    name: 'onda_workflow_create',
+    description:
+      'Create a new (empty) Workflow Canvas pipeline bound to a workspace. Call this when you want to compose a multi-step pipeline of chained Claude sessions. Returns { id }. Then add steps with onda_workflow_add_step.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        name: { type: 'string', description: 'Human-readable workflow name.' },
+        workspaceId: { type: 'string', description: 'Target workspace id the run spawns into (from onda_workspace_list).' },
+      },
+      required: ['workspaceId'],
+    },
+  },
+  {
+    name: 'onda_workflow_add_step',
+    description:
+      'Append a step to a workflow. Each step is one `claude -p` session with a prompt; its structured JSON output is fed to downstream steps. Set inputFrom to the step ids whose output this step needs.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        workflowId: { type: 'string', description: 'Workflow id from onda_workflow_create.' },
+        prompt: { type: 'string', description: 'Instruction for this step. End it by telling Claude to write its structured JSON result (the runner injects the exact output path).' },
+        label: { type: 'string', description: 'Short label for the node.' },
+        model: { type: 'string', enum: ['opus', 'sonnet', 'haiku'], description: 'Model tier (default sonnet). Use haiku for cheap mechanical steps.' },
+        inputFrom: { type: 'array', items: { type: 'string' }, description: 'Step ids whose JSON output to inject into this prompt.' },
+        edgeMode: { type: 'string', enum: ['fresh', 'resume'], description: 'fresh = new session; resume = inherit the upstream session context.' },
+        allowedTools: { type: 'array', items: { type: 'string' }, description: "Tools for --allowedTools (e.g. ['Write']). Default ['Read','Write']." },
+        mode: { type: 'string', enum: ['headless', 'interactive'], description: 'headless `claude -p` (default) or interactive TUI in a pane.' },
+      },
+      required: ['workflowId', 'prompt'],
+    },
+  },
+  {
+    name: 'onda_workflow_connect',
+    description: 'Connect two steps (source → target): adds the edge and makes target consume source\'s output. Call after adding both steps.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        workflowId: { type: 'string' },
+        source: { type: 'string', description: 'Upstream step id.' },
+        target: { type: 'string', description: 'Downstream step id.' },
+      },
+      required: ['workflowId', 'source', 'target'],
+    },
+  },
+  {
+    name: 'onda_workflow_run',
+    description:
+      'Run a workflow. Spawns each step in order in the target workspace, chaining output→input. Returns { accepted }. Poll onda_workflow_status for progress + cost. Runs under safety caps (max steps/concurrency/budget; never bypasses tool permissions).',
+    inputSchema: {
+      type: 'object' as const,
+      properties: { workflowId: { type: 'string' } },
+      required: ['workflowId'],
+    },
+  },
+  {
+    name: 'onda_workflow_cancel',
+    description: 'Cancel an in-flight workflow run.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: { workflowId: { type: 'string' } },
+      required: ['workflowId'],
+    },
+  },
+  {
+    name: 'onda_workflow_status',
+    description: 'Get a workflow run status: per-step status, cost, duration, and cumulative cost. Call this to watch progress after onda_workflow_run.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: { workflowId: { type: 'string' } },
+      required: ['workflowId'],
+    },
+  },
+  {
+    name: 'onda_workflow_list',
+    description: 'List saved workflows (id, name, step count). Use to discover existing pipelines before creating a new one.',
     inputSchema: {
       type: 'object' as const,
       properties: {},
@@ -760,6 +1041,75 @@ const TOOL_MAP: Record<string, { method: string; mapParams?: (args: Record<strin
     }),
   },
   onda_launch_session: { method: 'launchSession' },
+
+  // Agent delegation: forward EVERY declared param to the backend. Do
+  // not silently drop fields (the old `workspace.addTerminal` mapParams
+  // bug was caused exactly by that: schema declared `direction`, mapper
+  // omitted it, calls silently fell back to default placement).
+  onda_agent_spawn: {
+    method: 'agent.spawn',
+    mapParams: (args) => ({
+      placement: args.placement,
+      workspaceRootPath: args.workspaceRootPath,
+      workspaceName: args.workspaceName,
+      targetWindowId: args.targetWindowId,
+      mountDirection: args.mountDirection,
+      splitDirection: args.splitDirection,
+      splitCwd: args.splitCwd,
+      workspaceId: args.workspaceId,
+      addDirection: args.addDirection,
+      agentName: args.agentName,
+      agentBin: args.agentBin,
+      agentArgs: args.agentArgs,
+      execMode: args.execMode,
+      subscribe: args.subscribe,
+      snapshotDelay: args.snapshotDelay,
+      readyPattern: args.readyPattern,
+      readyTimeoutMs: args.readyTimeoutMs,
+    }),
+  },
+  onda_agent_prompt: {
+    method: 'agent.prompt',
+    mapParams: (args) => ({
+      terminalId: args.terminalId,
+      prompt: args.prompt,
+      submitWith: args.submitWith,
+      readyPattern: args.readyPattern,
+      readyTimeoutMs: args.readyTimeoutMs,
+      preWriteDelay: args.preWriteDelay,
+      postSubmitDelay: args.postSubmitDelay,
+    }),
+  },
+  onda_agent_wait: {
+    method: 'agent.wait',
+    mapParams: (args) => ({
+      sessionId: args.sessionId,
+      doneRegex: args.doneRegex,
+      timeoutMs: args.timeoutMs,
+      flags: args.flags,
+    }),
+  },
+  onda_agent_close: {
+    method: 'agent.close',
+    mapParams: (args) => ({
+      sessionId: args.sessionId,
+      terminalId: args.terminalId,
+      workspaceId: args.workspaceId,
+      killPty: args.killPty,
+      unmountWorkspace: args.unmountWorkspace,
+      closeWindow: args.closeWindow,
+      windowId: args.windowId,
+    }),
+  },
+
+  // Workflow Canvas orchestration (F2.3)
+  onda_workflow_create: { method: 'workflow.create' },
+  onda_workflow_add_step: { method: 'workflow.addStep' },
+  onda_workflow_connect: { method: 'workflow.connect' },
+  onda_workflow_run: { method: 'workflow.run' },
+  onda_workflow_cancel: { method: 'workflow.cancel' },
+  onda_workflow_status: { method: 'workflow.status' },
+  onda_workflow_list: { method: 'workflow.list' },
 
   // System (onda_context handled separately - it's local, not RPC)
   onda_status: { method: 'session.current' },
