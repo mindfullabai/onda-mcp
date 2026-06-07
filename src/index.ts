@@ -861,6 +861,93 @@ const TOOLS = [
       properties: {},
     },
   },
+
+  // ─── Workflow Canvas orchestration (F2.3) ───
+  // Build and run a visual pipeline where each node is a headless `claude -p`
+  // session, chained output→input. Use these to compose a multi-step Claude
+  // pipeline programmatically instead of doing every step yourself in one
+  // session — e.g. "generate options → critique → pick best → implement".
+  {
+    name: 'onda_workflow_create',
+    description:
+      'Create a new (empty) Workflow Canvas pipeline bound to a workspace. Call this when you want to compose a multi-step pipeline of chained Claude sessions. Returns { id }. Then add steps with onda_workflow_add_step.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        name: { type: 'string', description: 'Human-readable workflow name.' },
+        workspaceId: { type: 'string', description: 'Target workspace id the run spawns into (from onda_workspace_list).' },
+      },
+      required: ['workspaceId'],
+    },
+  },
+  {
+    name: 'onda_workflow_add_step',
+    description:
+      'Append a step to a workflow. Each step is one `claude -p` session with a prompt; its structured JSON output is fed to downstream steps. Set inputFrom to the step ids whose output this step needs.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        workflowId: { type: 'string', description: 'Workflow id from onda_workflow_create.' },
+        prompt: { type: 'string', description: 'Instruction for this step. End it by telling Claude to write its structured JSON result (the runner injects the exact output path).' },
+        label: { type: 'string', description: 'Short label for the node.' },
+        model: { type: 'string', enum: ['opus', 'sonnet', 'haiku'], description: 'Model tier (default sonnet). Use haiku for cheap mechanical steps.' },
+        inputFrom: { type: 'array', items: { type: 'string' }, description: 'Step ids whose JSON output to inject into this prompt.' },
+        edgeMode: { type: 'string', enum: ['fresh', 'resume'], description: 'fresh = new session; resume = inherit the upstream session context.' },
+        allowedTools: { type: 'array', items: { type: 'string' }, description: "Tools for --allowedTools (e.g. ['Write']). Default ['Read','Write']." },
+        mode: { type: 'string', enum: ['headless', 'interactive'], description: 'headless `claude -p` (default) or interactive TUI in a pane.' },
+      },
+      required: ['workflowId', 'prompt'],
+    },
+  },
+  {
+    name: 'onda_workflow_connect',
+    description: 'Connect two steps (source → target): adds the edge and makes target consume source\'s output. Call after adding both steps.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        workflowId: { type: 'string' },
+        source: { type: 'string', description: 'Upstream step id.' },
+        target: { type: 'string', description: 'Downstream step id.' },
+      },
+      required: ['workflowId', 'source', 'target'],
+    },
+  },
+  {
+    name: 'onda_workflow_run',
+    description:
+      'Run a workflow. Spawns each step in order in the target workspace, chaining output→input. Returns { accepted }. Poll onda_workflow_status for progress + cost. Runs under safety caps (max steps/concurrency/budget; never bypasses tool permissions).',
+    inputSchema: {
+      type: 'object' as const,
+      properties: { workflowId: { type: 'string' } },
+      required: ['workflowId'],
+    },
+  },
+  {
+    name: 'onda_workflow_cancel',
+    description: 'Cancel an in-flight workflow run.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: { workflowId: { type: 'string' } },
+      required: ['workflowId'],
+    },
+  },
+  {
+    name: 'onda_workflow_status',
+    description: 'Get a workflow run status: per-step status, cost, duration, and cumulative cost. Call this to watch progress after onda_workflow_run.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: { workflowId: { type: 'string' } },
+      required: ['workflowId'],
+    },
+  },
+  {
+    name: 'onda_workflow_list',
+    description: 'List saved workflows (id, name, step count). Use to discover existing pipelines before creating a new one.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {},
+    },
+  },
 ];
 
 // ─── Tool → Method mapping ───────────────────────────────────
@@ -1014,6 +1101,15 @@ const TOOL_MAP: Record<string, { method: string; mapParams?: (args: Record<strin
       windowId: args.windowId,
     }),
   },
+
+  // Workflow Canvas orchestration (F2.3)
+  onda_workflow_create: { method: 'workflow.create' },
+  onda_workflow_add_step: { method: 'workflow.addStep' },
+  onda_workflow_connect: { method: 'workflow.connect' },
+  onda_workflow_run: { method: 'workflow.run' },
+  onda_workflow_cancel: { method: 'workflow.cancel' },
+  onda_workflow_status: { method: 'workflow.status' },
+  onda_workflow_list: { method: 'workflow.list' },
 
   // System (onda_context handled separately - it's local, not RPC)
   onda_status: { method: 'session.current' },
