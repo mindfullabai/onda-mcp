@@ -32,10 +32,14 @@ function getSocketPath(): string {
 
 // Context from the terminal where this MCP server was launched
 const ONDA_CONTEXT = {
+  terminalId: process.env.ONDA_TERMINAL_ID || null,
   paneId: process.env.ONDA_PANE_ID || null,
   tabId: process.env.ONDA_TAB_ID || null,
   workspaceId: process.env.ONDA_WORKSPACE_ID || null,
-  isOnda: process.env.ONDA_TERMINAL === '1',
+  // ONDA_SOCKET is exported for every terminal Onda spawns; ONDA_TERMINAL only
+  // for zsh with a resolved ZDOTDIR, so it gave a false negative under
+  // bash/fish. See agent-team-os/schema/CONTRACT.md §1.
+  isOnda: Boolean(process.env.ONDA_SOCKET),
 };
 
 let requestId = 0;
@@ -211,6 +215,36 @@ const TOOLS = [
         windowId: { type: 'string', description: 'Filter: only terminals in this window.' },
       },
     },
+  },
+  {
+    name: 'onda_agent_sessions',
+    description:
+      'List live agent sessions (Claude Code and friends) known to Onda, as reported by the Agent Team OS hook. Each entry: { sessionId, terminalId, paneId, workspaceId, agent, status, lastTool, lastTarget, ctxPct, inboxPending, since, lastSeen }. This is how an agent can see its own team: who is working, who is waiting, and where. Status is busy | waiting | idle | error.',
+    inputSchema: { type: 'object' as const, properties: {} },
+  },
+  {
+    name: 'onda_agent_events',
+    description:
+      'Recent lifecycle events for one agent session, newest last, from the main-process ring buffer. Tool names and cwd-relative paths only — never file contents or prompt text.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        sessionId: { type: 'string', description: 'Session id, from onda_agent_sessions.' },
+        limit: { type: 'number', description: 'How many events to return (default 50, max 200).' },
+      },
+      required: ['sessionId'],
+    },
+  },
+  {
+    name: 'onda_agentic_open',
+    description:
+      'Open (or focus) the Agentic window: the team roster with one card per agent, live status, and one click to mount a workspace into the mosaic.',
+    inputSchema: { type: 'object' as const, properties: {} },
+  },
+  {
+    name: 'onda_agentic_close',
+    description: 'Close the Agentic window if open.',
+    inputSchema: { type: 'object' as const, properties: {} },
   },
   {
     name: 'onda_terminal_kill',
@@ -605,7 +639,7 @@ const TOOLS = [
   {
     name: 'onda_launch_session',
     description:
-      'High-level macro: ensure workspace exists → mount it in target window → add a terminal pane → spawn `bin` with `args` (or `prompt` as single argv). Atomic from the agent\'s point of view. Supports placement modes: "auto" (default), "current-window", "window:<windowId>", "new-window", "ask-user" (interactive — see below).\n\n**Placement "ask-user"**: the tool does NOT proceed. Instead returns { needsDecision: true, options: [{placement, label}], workspace }. The host agent must surface the choice to the human user and re-invoke this tool with placement set to a concrete value (e.g. "window:w-abc").\n\nOn success returns { windowId, workspaceId, terminalId, paneId, pid }.',
+      '[DEPRECATED — use onda_agent_spawn + onda_agent_prompt; kept for backward compatibility only, same backend.] High-level macro: ensure workspace exists → mount it in target window → add a terminal pane → spawn `bin` with `args` (or `prompt` as single argv). Atomic from the agent\'s point of view. Supports placement modes: "auto" (default), "current-window", "window:<windowId>", "new-window", "ask-user" (interactive — see below).\n\n**Placement "ask-user"**: the tool does NOT proceed. Instead returns { needsDecision: true, options: [{placement, label}], workspace }. The host agent must surface the choice to the human user and re-invoke this tool with placement set to a concrete value (e.g. "window:w-abc").\n\nOn success returns { windowId, workspaceId, terminalId, paneId, pid }.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -754,7 +788,7 @@ const TOOLS = [
         },
         prompt: {
           type: 'string',
-          description: 'The text to write. For TUI agents this populates the textbox. No shell-quoting — the caller talks to a TUI, not a shell. Caller is responsible for any agent-bus preamble (e.g. "# STATUS:", "# DONE" sentinels, "/send kai brief: ..." vocabulary). Onda stays opinion-free about protocol semantics.',
+          description: 'The text to write. For TUI agents this populates the textbox. No shell-quoting — the caller talks to a TUI, not a shell, so apostrophes, double quotes and multi-line text are all safe here (this is THE place for the task prompt; never put it in argv). Caller is responsible for any agent-bus preamble (e.g. "# STATUS:", "# DONE" sentinels, "/send kai brief: ..." vocabulary). Onda stays opinion-free about protocol semantics.',
         },
         submitWith: {
           type: 'string',
@@ -981,6 +1015,12 @@ const TOOL_MAP: Record<string, { method: string; mapParams?: (args: Record<strin
   onda_terminal_poll: { method: 'terminal.poll' },
   onda_terminal_unsubscribe: { method: 'terminal.unsubscribe' },
   onda_terminal_listeners: { method: 'terminal.listeners' },
+
+  // Agent Team — see agent-team-os/schema/CONTRACT.md
+  onda_agent_sessions: { method: 'agent.sessions' },
+  onda_agent_events: { method: 'agent.events' },
+  onda_agentic_open: { method: 'agentic.open' },
+  onda_agentic_close: { method: 'agentic.close' },
   onda_terminal_wait_for: { method: 'terminal.waitFor' },
   onda_terminal_send_keys: { method: 'terminal.sendKeys' },
 
@@ -1119,15 +1159,38 @@ const TOOL_MAP: Record<string, { method: string; mapParams?: (args: Record<strin
 
 // ─── MCP Server ──────────────────────────────────────────────
 
+// Injected into the client's system prompt on connect. This is the one place
+// where a model reads the *hierarchy* between tools — descriptions alone are
+// flat, and three overlapping pipelines (agent_*, launch_session, the manual
+// workspace_create → add_terminal → terminal_spawn dance) look equally valid
+// without it. Keep it short: it costs context on every session.
+const SERVER_INSTRUCTIONS = `Onda is the terminal emulator you are running inside. These tools mutate the live app the user is looking at — treat pane/workspace state as shared with them.
+
+Layout model: Window ⊃ Workspace (root folder + panes, mounted as a tile in a window) ⊃ Pane (terminal | editor | diff). Terminals have a stable terminalId.
+
+TO OPEN A WORKSPACE AND START AN AGENT SESSION (claude, codex, qwen, ...), ALWAYS use the agent_* flow:
+  1. onda_agent_spawn(placement="workspace", workspaceRootPath=<path>, agentBin="claude", agentArgs=[flags only], readyPattern="❯|Welcome back|Try \\"")
+     → creates/locates + mounts the workspace, adds a pane, boots the TUI, blocks until ready. Returns terminalId + sessionId.
+  2. onda_agent_prompt(terminalId, prompt) → writes the task into the TUI textbox and presses Enter. No shell involved: apostrophes, quotes and newlines are safe here.
+  3. onda_agent_wait(sessionId, doneRegex, timeoutMs<=15000 in a loop) → wait for a sentinel.
+  4. onda_agent_close(sessionId) → detach (soft) or kill.
+Placement variants: "pane-split" (split the pane you are in), "same-workspace" (add a pane to an already-mounted workspaceId).
+Before spawning, check onda_pane_list / onda_terminal_list for an existing live agent in that workspace and reuse it instead of creating duplicates.
+
+DO NOT: pass the task prompt as an argv element (agentArgs, terminal_spawn args, launch_session prompt) — a single apostrophe breaks zsh parsing and the prompt never reaches the agent. DO NOT use onda_launch_session (deprecated; same backend, worse ergonomics). DO NOT hand-assemble workspace_create → window_mount_workspace → workspace_add_terminal → terminal_spawn → send_keys unless agent_spawn returned an error you must work around.
+
+Terminal I/O rules: onda_terminal_read is a snapshot, subscribe+poll is a stream, wait_for(regex) is a sync barrier — prefer wait_for over polling noisy TUIs. Control keys go through onda_terminal_send_keys (["Ctrl+C"], ["Enter"]), never as escape bytes in terminal_send. In a TUI textbox a trailing \\n is a newline, not Submit: follow text with send_keys(["Enter"]). Always unsubscribe listeners you opened.`;
+
 const server = new Server(
   {
     name: 'onda',
-    version: '0.1.0',
+    version: '0.6.0',
   },
   {
     capabilities: {
       tools: {},
     },
+    instructions: SERVER_INSTRUCTIONS,
   }
 );
 
