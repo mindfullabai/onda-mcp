@@ -480,13 +480,18 @@ const TOOLS = [
   },
   {
     name: 'onda_workspace_create',
-    description: 'Create a new workspace. Workspaces group tabs by project.',
+    description:
+      'Create a new workspace. Workspaces group tabs by project. Pass hostId to create it on a remote host: rootPath is then a path ON THAT HOST, and every pane in the workspace runs there. The host must already be configured in Onda (Settings > Remotes) — use onda_remote_list to see which.',
     inputSchema: {
       type: 'object' as const,
       properties: {
         name: { type: 'string', description: 'Workspace name.' },
-        rootPath: { type: 'string', description: 'Root directory path for the workspace.' },
+        rootPath: { type: 'string', description: 'Root directory. On the remote host when hostId is set.' },
         color: { type: 'string', description: 'Color hex code (e.g., #a78bfa).' },
+        hostId: {
+          type: 'string',
+          description: 'Remote host id (the ssh alias, e.g. "mini"). Omit for this Mac. The host belongs to the workspace, not to individual panes.',
+        },
       },
       required: ['name', 'rootPath'],
     },
@@ -635,6 +640,42 @@ const TOOLS = [
     },
   },
 
+  // --- Remote hosts ---
+  // The terminal_*/workspace_* tools take an optional hostId rather than being
+  // duplicated: an agent should not have to learn two APIs for the same thing.
+  // These cover what has no local equivalent.
+  {
+    name: 'onda_remote_list',
+    description:
+      'List the remote hosts configured in Onda, with what the last preflight found (reachable, tmux version, whether it can hold persistent workspaces). Call this before creating a remote workspace to learn the valid hostId values.',
+    inputSchema: { type: 'object' as const, properties: {} },
+  },
+  {
+    name: 'onda_remote_sessions',
+    description:
+      'List live tmux sessions on a remote host, with the command running in each. This is how to find work left behind by an earlier session — including your own after a disconnect.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        hostId: { type: 'string', description: 'Remote host id, e.g. "mini".' },
+      },
+      required: ['hostId'],
+    },
+  },
+  {
+    name: 'onda_remote_readdir',
+    description:
+      'List a directory on a remote host. The local filesystem tools cannot see a remote path; use this to pick a rootPath before creating a remote workspace.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        hostId: { type: 'string', description: 'Remote host id, e.g. "mini".' },
+        path: { type: 'string', description: 'Absolute path on the host. Omit for the home directory.' },
+      },
+      required: ['hostId'],
+    },
+  },
+
   // --- High-level macro ---
   {
     name: 'onda_launch_session',
@@ -778,7 +819,7 @@ const TOOLS = [
   {
     name: 'onda_agent_prompt',
     description:
-      'Submit a task prompt to an agent that was previously spawned with `onda_agent_spawn`. Use this once `onda_agent_spawn` has returned with `ready: true` (TUI textbox is up and accepting keystrokes). Writes the prompt as raw text into the PTY, then optionally sends Enter to submit. Idempotent in the sense that you can call it multiple times — useful for multi-line drafts (each call with `submitWith: "none"` except the last) or for retry-on-blocker scenarios.',
+      'Submit a task prompt to an agent that was previously spawned with `onda_agent_spawn`. Use this once `onda_agent_spawn` has returned with `ready: true` (TUI textbox is up and accepting keystrokes). Writes the prompt into the PTY (multi-line text goes through bracketed paste so the TUI does not swallow the submitting Enter), then optionally sends Enter.\n\n**The submission is verified, not assumed.** The result carries `submitted`: true when the TUI was seen to accept the prompt, false when it was not. On false the text was delivered but is most likely still parked in the textbox as `[Pasted text #N]` — `success` is false too, and the fix is to read the terminal and send Enter via `onda_terminal_send_keys(["Enter"])`. `completedSteps` contains "submit" only when submission was actually observed. Idempotent in the sense that you can call it multiple times — useful for multi-line drafts (each call with `submitWith: "none"` except the last) or for retry-on-blocker scenarios.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -1080,6 +1121,12 @@ const TOOL_MAP: Record<string, { method: string; mapParams?: (args: Record<strin
       args: args.args,
     }),
   },
+
+  // Remote hosts. No mapParams: every declared field is forwarded as-is, per
+  // the warning below about schemas and mappers drifting apart.
+  onda_remote_list: { method: 'remote.list' },
+  onda_remote_sessions: { method: 'remote.sessions' },
+  onda_remote_readdir: { method: 'remote.readDir' },
   onda_launch_session: { method: 'launchSession' },
 
   // Agent delegation: forward EVERY declared param to the backend. Do
