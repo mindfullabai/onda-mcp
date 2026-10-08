@@ -618,6 +618,19 @@ const TOOLS = [
       required: ['workspaceId'],
     },
   },
+  {
+    name: 'onda_workspace_prune',
+    description:
+      'Remove the "[Process exited]" panes of a mounted workspace — any dead terminal pane, whoever opened it — and keep the live ones. If nothing alive is left (no live terminal, no editor/diff pane), the workspace leaves the mosaic when onda_agent_spawn mounted it or `unmountWhenEmpty` is true; a workspace the user mounted stays, in its empty state. Returns { success, workspaceId, removedPaneIds, livePaneIds, empty, unmounted }. Only terminals that exited during this Onda run count as dead.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        workspaceId: { type: 'string', description: 'Workspace to clean up (must be mounted).' },
+        unmountWhenEmpty: { type: 'boolean', description: 'Override the default: true unmounts once empty, false keeps it mounted.' },
+      },
+      required: ['workspaceId'],
+    },
+  },
 
   // --- Advanced terminal spawn ---
   {
@@ -809,6 +822,10 @@ const TOOLS = [
           enum: ['report', 'accept', 'reject'],
           description: 'What to do if Claude Code asks "trust this folder?" (first launch in a folder; needs `readyPattern`). Default "report": touch nothing, return `state: "trust_prompt"` so you (or the user) decide. "accept": select "Yes, I trust this folder" (the spawn reads which option is preselected — newer versions preselect "No, exit") and keep waiting for ready; the response has `trust: "accepted"`. "reject": answer no; Claude Code exits. Accept only folders you or the user created or explicitly trust.',
         },
+        unmountWhenEmpty: {
+          type: 'boolean',
+          description: 'What happens when this agent\'s process ends and nothing alive is left in the workspace. The agent\'s pane always goes (no "[Process exited]" left behind). Default: the workspace leaves the mosaic if THIS spawn mounted it, and stays (empty) if it was already mounted. true: always unmount once empty. false: never. Unmount is not delete — the workspace stays in the list.',
+        },
         subscribe: {
           type: 'boolean',
           description: 'Attach a listener and return a `sessionId` ready for `onda_agent_wait`. Default true. Also lights up the presence badge in the pane header.',
@@ -891,15 +908,16 @@ const TOOLS = [
   {
     name: 'onda_agent_close',
     description:
-      'Escalation cleanup after an agent finishes (or to abandon a delegation). Three levels: SOFT — only `sessionId` set → unsubscribe (keeps PTY alive, lets you reattach or let the user inspect). MEDIUM — `+ killPty + terminalId` → terminates the agent process. HARD — `+ unmountWorkspace + workspaceId` (and optionally `+ closeWindow + windowId`) → full teardown of an ephemeral delegation. Add `closePane` to also remove the pane instead of leaving it on screen as "[Process exited]". All fields are optional; the tool does only what you ask (closeWindow without killPty first detaches the window\'s workspaces, so their sessions survive the close).',
+      'Escalation cleanup after an agent finishes (or to abandon a delegation). Three levels: SOFT — only `sessionId` set → unsubscribe (keeps PTY alive, lets you reattach or let the user inspect). MEDIUM — `+ killPty + terminalId` → terminates the agent process; a pane created by onda_agent_spawn goes with it. HARD — `+ unmountWorkspace + workspaceId` (and optionally `+ closeWindow + windowId`) → full teardown of an ephemeral delegation. Add `closePane` to remove any pane (the workspace\'s last one included) instead of leaving it on screen as "[Process exited]".\n\n**Empty workspaces.** After a kill or a pane close, if no live terminal is left in the workspace it leaves the mosaic when onda_agent_spawn mounted it (default), or when `unmountWhenEmpty: true`; a workspace the user mounted by hand stays, in its empty state. The result says `workspaceEmpty`, `unmounted`, and `removedPaneIds` (the closed pane plus any dead agent panes). For "[Process exited]" panes that are not the agent\'s, use onda_workspace_prune. All fields are optional; the tool does only what you ask (closeWindow without killPty first detaches the window\'s workspaces, so their sessions survive the close).',
     inputSchema: {
       type: 'object' as const,
       properties: {
         sessionId: { type: 'string', description: 'Subscriber session to detach. Idempotent.' },
         terminalId: { type: 'string', description: 'Terminal to kill. Required when `killPty` is true.' },
-        workspaceId: { type: 'string', description: 'Workspace to unmount. Required when `unmountWorkspace` is true.' },
-        killPty: { type: 'boolean', description: 'Default false. When true, the underlying PTY process is terminated (UI shows [Process exited] unless `closePane` is set).' },
-        closePane: { type: 'boolean', description: 'Default false. When true, the pane is removed from its workspace (typically together with killPty). Needs `workspaceId` (or `windowId`) to find the window; the result says `paneClosed`. A workspace always keeps its last pane: in that case `paneClosed` is false and `paneCloseSkipped` says why.' },
+        workspaceId: { type: 'string', description: 'The agent\'s workspace. Required when `unmountWorkspace` is true; otherwise optional (found from the pane).' },
+        killPty: { type: 'boolean', description: 'Default false. When true, the underlying PTY process is terminated. A pane created by onda_agent_spawn is removed with it; any other pane shows [Process exited] unless `closePane` is set.' },
+        closePane: { type: 'boolean', description: 'Default false. When true, the pane is removed from its workspace (typically together with killPty), the last one included. The result says `paneClosed` (and `paneCloseSkipped` with the reason when it could not).' },
+        unmountWhenEmpty: { type: 'boolean', description: 'What to do if no live terminal is left after the close. Default: unmount only if onda_agent_spawn mounted the workspace. true: unmount. false: keep it mounted (empty). Unmount is not delete — the workspace stays in the list.' },
         paneId: { type: 'string', description: 'Pane to close with `closePane`. Default: `terminalId` (they are the same for terminal panes spawned by onda_agent_spawn).' },
         unmountWorkspace: { type: 'boolean', description: 'Default false. When true, the workspace is dropped from its window\'s mosaic. The workspace itself still exists in the global list.' },
         closeWindow: { type: 'boolean', description: 'Default false. When true, the host window is closed via `BrowserWindow.close()`. Requires `windowId`. Only use when YOU spawned this window via `onda_window_new`.' },
@@ -1117,6 +1135,7 @@ const TOOL_MAP: Record<string, { method: string; mapParams?: (args: Record<strin
   onda_window_focus: { method: 'window.focus' },
   onda_window_mount_workspace: { method: 'window.mountWorkspace' },
   onda_workspace_unmount: { method: 'workspace.unmount' },
+  onda_workspace_prune: { method: 'workspace.prune' },
 
   // Advanced spawn + macro
   onda_terminal_spawn: {
@@ -1161,6 +1180,7 @@ const TOOL_MAP: Record<string, { method: string; mapParams?: (args: Record<strin
       readyPattern: args.readyPattern,
       readyTimeoutMs: args.readyTimeoutMs,
       trust: args.trust,
+      unmountWhenEmpty: args.unmountWhenEmpty,
     }),
   },
   onda_agent_prompt: {
@@ -1194,6 +1214,7 @@ const TOOL_MAP: Record<string, { method: string; mapParams?: (args: Record<strin
       closePane: args.closePane,
       paneId: args.paneId,
       unmountWorkspace: args.unmountWorkspace,
+      unmountWhenEmpty: args.unmountWhenEmpty,
       closeWindow: args.closeWindow,
       windowId: args.windowId,
     }),
@@ -1231,7 +1252,7 @@ TO OPEN A WORKSPACE AND START AN AGENT SESSION (claude, codex, qwen, ...), ALWAY
      Read state before prompting: "ready" → go on. "trust_prompt" → first launch in that folder: ask the user, or spawn again with trust="accept" for a folder you created. "not_logged_in" / "onboarding" → the account needs /login or its first-run setup: tell the user, do not prompt. "timeout" → read the terminal. reusedPane/cwd say where the session started.
   2. onda_agent_prompt(terminalId, prompt) → writes the task into the TUI textbox and presses Enter. No shell involved: apostrophes, quotes and newlines are safe here.
   3. onda_agent_wait(sessionId, doneRegex, timeoutMs<=15000 in a loop) → wait for a sentinel.
-  4. onda_agent_close(sessionId) → detach (soft); + killPty + closePane + workspaceId → kill and remove the pane (else it stays as "[Process exited]").
+  4. onda_agent_close(sessionId) → detach (soft); + killPty + terminalId → kill it, and the spawned pane goes with it. A workspace the spawn mounted leaves the mosaic once nothing alive is left in it (unmountWhenEmpty overrides). Leftover "[Process exited]" panes: onda_workspace_prune(workspaceId).
 Placement variants: "pane-split" (split the pane you are in), "same-workspace" (add a pane to an already-mounted workspaceId).
 Before spawning, check onda_pane_list / onda_terminal_list for an existing live agent in that workspace and reuse it instead of creating duplicates.
 

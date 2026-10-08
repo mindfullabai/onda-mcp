@@ -2,7 +2,7 @@
 name: onda-mcp-usage
 description: Best practices for driving Onda (terminal emulator) from Claude Code via the `onda` MCP server (`mcp__onda__*`). Covers workspaces/windows/panes/terminals + buffer reading (read/subscribe/poll/wait_for/send_keys) + spatial awareness (layout/screenshot). Use whenever you call any `mcp__onda__*` tool or the user mentions Onda, pane, workspace, terminal listener, presence badge, inception loop (Claude controlling Onda from inside Onda). Triggers — onda mcp, drive onda, control onda terminal, show pane, workspace layout, onda screenshot, kai watcher, terminal listener.
 metadata:
-  version: 0.6.0
+  version: 0.6.1
   source: '@mindfullabai/onda-mcp'
 ---
 
@@ -91,6 +91,7 @@ Internal workspace layout = mosaic-component tree. Read it via `onda_workspace_l
 | "Submit a task prompt to a TUI agent" | `onda_agent_prompt` (after spawn returned ready:true) |
 | "Wait until the delegated agent reports done" | `onda_agent_wait` with `doneRegex` |
 | "Clean up after a delegation" | `onda_agent_close` (escalation: soft → kill → unmount → close window) |
+| "Remove the [Process exited] panes" | `onda_workspace_prune` |
 | "Read what the terminal has printed so far" | `onda_terminal_read` (no subscribe needed) |
 | "I want to receive every new output chunk" | `subscribe` + `poll` loop |
 | "Wait until the build finishes" | `onda_terminal_wait_for` with regex |
@@ -278,14 +279,26 @@ result = agent_wait(
 
 # 4. Clean up. SOFT (default): unsubscribe only, leave the PTY alive so the
 #    user can inspect. MEDIUM (+killPty + terminalId): terminate the agent;
-#    add closePane + workspaceId so the pane goes too instead of staying on
-#    screen as "[Process exited]" (a workspace keeps its last pane: then
-#    paneClosed=false, paneCloseSkipped says so).
+#    the pane agent_spawn created goes with it (closePane removes any other
+#    pane, the workspace's last one included).
 #    HARD (+unmountWorkspace + workspaceId): drop the workspace tile.
 agent_close(sessionId=spawn.sessionId)
-agent_close(sessionId=spawn.sessionId, terminalId=spawn.terminalId,
-            workspaceId=spawn.workspaceId, killPty=True, closePane=True)
+agent_close(sessionId=spawn.sessionId, terminalId=spawn.terminalId, killPty=True)
+# → {killed: True, workspaceEmpty: True, unmounted: True, removedPaneIds: [...]}
 ```
+
+### Empty workspaces: when the tile goes away
+
+When no live terminal is left in a workspace after an agent's pane closes (agent_close with killPty/closePane, or the agent exiting on its own), Onda decides whether the workspace leaves the mosaic. Unmount is not delete: it stays in the list.
+
+| Workspace | Agent pane dies, nothing alive left | Override |
+|-----------|-------------------------------------|----------|
+| Mounted by `agent_spawn` | pane goes, workspace unmounted | `unmountWhenEmpty: false` (on spawn or close) keeps it |
+| Already mounted (by the user) | pane goes, workspace stays, empty | `unmountWhenEmpty: true` unmounts it |
+
+- Editor and diff panes count as alive: a workspace holding an open file never unmounts by itself.
+- A user's shell that exits stays as "[Process exited]", as always: only agent panes clean up after themselves.
+- `"[Process exited]"` panes left next to live ones (exited while the workspace was not on screen, or before a new pane was added): `workspace_prune(workspaceId)` removes every dead terminal pane, whoever opened it, and applies the same unmount rule if nothing is left.
 
 ### Boot states: what `state` means
 
@@ -581,7 +594,8 @@ Agent delegation (preferred since 0.4.0, split into spawn+prompt in 0.5.0):
 - `onda_agent_spawn` — boot an agent in a workspace+pane and return when `readyPattern` matches (or timeout). Returns `sessionId` + `firstChunk`. Does NOT submit a prompt.
 - `onda_agent_prompt` — write a prompt into the spawned agent's TUI textbox and submit it. Has its own optional `readyPattern` defensive sync.
 - `onda_agent_wait` — block on the spawned agent's sessionId until `doneRegex` matches; returns matched chunk + tail content.
-- `onda_agent_close` — escalation cleanup: unsubscribe → kill PTY → unmount workspace → close window. Each step opt-in via boolean flags.
+- `onda_agent_close` — escalation cleanup: unsubscribe → kill PTY → close pane → unmount workspace → close window. Each step opt-in via boolean flags; a workspace agent_spawn mounted unmounts by itself once empty (`unmountWhenEmpty` overrides).
+- `onda_workspace_prune` — remove the "[Process exited]" panes of a mounted workspace; unmount it if nothing alive is left and the rule above says so.
 
 ## Versioning
 
