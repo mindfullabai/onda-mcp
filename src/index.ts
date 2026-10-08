@@ -587,7 +587,7 @@ const TOOLS = [
   {
     name: 'onda_window_mount_workspace',
     description:
-      'Mount a workspace in a specific window. Idempotent when the workspace is already there. If the workspace is currently mounted in another window, orchestrates an atomic transfer via the unmount-request flow (same path the in-app "Move workspace here?" dialog uses). Returns { success, workspaceId, windowId, transferred }. Pass `direction` to control how the new tile is spliced into the mosaic (mirrors the Cmd+P picker: Enter = down, Cmd+Enter = right).',
+      'Mount a workspace in a specific window. Idempotent when the workspace is already there. If the workspace is currently mounted in another window, orchestrates an atomic transfer via the unmount-request flow (same path the in-app "Move workspace here?" dialog uses). Returns { success, workspaceId, windowId, transferred } only once the window itself shows the tile (it waits for a just-created window to be ready); if the tile does not appear the call fails with the reason and the mount is released, instead of reporting a mount that is not on screen. Pass `direction` to control how the new tile is spliced into the mosaic (mirrors the Cmd+P picker: Enter = down, Cmd+Enter = right).',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -730,7 +730,7 @@ const TOOLS = [
   {
     name: 'onda_agent_spawn',
     description:
-      'Boot an agent in a workspace+pane and return once the TUI is ready to accept a prompt. Does NOT submit a task — use `onda_agent_prompt` after spawn for that. Splitting bootstrap and prompt delivery makes the flow resilient: you can retry the prompt without re-paying the agent cold-start (5-10s for Claude), and you can intercept unexpected TUI states (trust dialog, model picker) between the two steps. Placement modes: "workspace" (default — full create+mount+add), "pane-split" (split active pane of current workspace), "same-workspace" (add a terminal to an already-mounted workspace). For non-TUI binaries (bash, scripts), pass the full command in `agentArgs` and use `execMode: "run"`; `onda_agent_prompt` is then unnecessary.',
+      'Boot an agent in a workspace+pane and return once the TUI is ready to accept a prompt. Does NOT submit a task — use `onda_agent_prompt` after spawn for that. Splitting bootstrap and prompt delivery makes the flow resilient: you can retry the prompt without re-paying the agent cold-start (5-10s for Claude), and you can intercept unexpected TUI states between the two steps.\n\n**Check `state`, not only `ready`.** With a `readyPattern`, the response says what the screen really is: "ready" (prompt box up), "trust_prompt" (Claude Code asks whether to trust the folder — happens the first time in a folder), "not_logged_in" ("Not logged in · Please run /login" or the login-method picker), "onboarding" (first-run setup of a fresh account/config dir), or "timeout". Those three screens also draw the `❯` a ready pattern looks for, so before this field they came back as ready. Only `state: "ready"` means `onda_agent_prompt` will land; the others come with `needsUserAction: true` and a `hint`. Output is judged from the moment the command is written, so a reused pane\'s old screens do not count. Use `trust: "accept"` to let the spawn answer the folder question itself.\n\n**Where the session starts.** placement="workspace" locates the workspace by `workspaceRootPath` (the folder is the identity; `workspaceName` is only a label for a new one). It reuses the workspace\'s active pane only if that pane sits idle at a shell prompt, and then `cd`s it into the root first; a busy pane is left alone and a new one is added. The response reports `cwd` (the root the session was started in) and `reusedPane`. Placement modes: "workspace" (default — full create+mount+add), "pane-split" (split active pane of current workspace), "same-workspace" (add a terminal to an already-mounted workspace). For non-TUI binaries (bash, scripts), pass the full command in `agentArgs` and use `execMode: "run"`; `onda_agent_prompt` is then unnecessary.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -798,11 +798,16 @@ const TOOLS = [
         },
         readyPattern: {
           type: 'string',
-          description: 'JavaScript regex (string form). When set, agent.spawn blocks until the pattern matches new output before returning. Use it to synchronize on "TUI is ready for a prompt" — for Claude TUI a good default is "❯|Welcome back|Try \\"|bypass permissions"; for qwen "qwen>|Ready"; for bash this is unnecessary. The response includes `ready: true` on match, `ready: false` on timeout (caller decides whether to proceed).',
+          description: 'JavaScript regex (string form). When set, agent.spawn blocks until the pattern matches new output before returning. Use it to synchronize on "TUI is ready for a prompt" — for Claude TUI a good default is "❯|Welcome back|Try \\"|bypass permissions"; for qwen "qwen>|Ready"; for bash this is unnecessary. The response includes `ready` and `state` (see the tool description): `ready` is true only when `state` is "ready".',
         },
         readyTimeoutMs: {
           type: 'number',
           description: 'Max wait for readyPattern in ms. Default 15000 (15s — enough for Claude cold-start on a busy machine).',
+        },
+        trust: {
+          type: 'string',
+          enum: ['report', 'accept', 'reject'],
+          description: 'What to do if Claude Code asks "trust this folder?" (first launch in a folder; needs `readyPattern`). Default "report": touch nothing, return `state: "trust_prompt"` so you (or the user) decide. "accept": select "Yes, I trust this folder" (the spawn reads which option is preselected — newer versions preselect "No, exit") and keep waiting for ready; the response has `trust: "accepted"`. "reject": answer no; Claude Code exits. Accept only folders you or the user created or explicitly trust.',
         },
         subscribe: {
           type: 'boolean',
@@ -886,14 +891,16 @@ const TOOLS = [
   {
     name: 'onda_agent_close',
     description:
-      'Escalation cleanup after an agent finishes (or to abandon a delegation). Three levels: SOFT — only `sessionId` set → unsubscribe (keeps PTY alive, lets you reattach or let the user inspect). MEDIUM — `+ killPty + terminalId` → terminates the agent process. HARD — `+ unmountWorkspace + workspaceId` (and optionally `+ closeWindow + windowId`) → full teardown of an ephemeral delegation. All fields are optional; the tool does only what you ask.',
+      'Escalation cleanup after an agent finishes (or to abandon a delegation). Three levels: SOFT — only `sessionId` set → unsubscribe (keeps PTY alive, lets you reattach or let the user inspect). MEDIUM — `+ killPty + terminalId` → terminates the agent process. HARD — `+ unmountWorkspace + workspaceId` (and optionally `+ closeWindow + windowId`) → full teardown of an ephemeral delegation. Add `closePane` to also remove the pane instead of leaving it on screen as "[Process exited]". All fields are optional; the tool does only what you ask (closeWindow without killPty first detaches the window\'s workspaces, so their sessions survive the close).',
     inputSchema: {
       type: 'object' as const,
       properties: {
         sessionId: { type: 'string', description: 'Subscriber session to detach. Idempotent.' },
         terminalId: { type: 'string', description: 'Terminal to kill. Required when `killPty` is true.' },
         workspaceId: { type: 'string', description: 'Workspace to unmount. Required when `unmountWorkspace` is true.' },
-        killPty: { type: 'boolean', description: 'Default false. When true, the underlying PTY process is terminated (UI shows [Process exited]).' },
+        killPty: { type: 'boolean', description: 'Default false. When true, the underlying PTY process is terminated (UI shows [Process exited] unless `closePane` is set).' },
+        closePane: { type: 'boolean', description: 'Default false. When true, the pane is removed from its workspace (typically together with killPty). Needs `workspaceId` (or `windowId`) to find the window; the result says `paneClosed`. A workspace always keeps its last pane: in that case `paneClosed` is false and `paneCloseSkipped` says why.' },
+        paneId: { type: 'string', description: 'Pane to close with `closePane`. Default: `terminalId` (they are the same for terminal panes spawned by onda_agent_spawn).' },
         unmountWorkspace: { type: 'boolean', description: 'Default false. When true, the workspace is dropped from its window\'s mosaic. The workspace itself still exists in the global list.' },
         closeWindow: { type: 'boolean', description: 'Default false. When true, the host window is closed via `BrowserWindow.close()`. Requires `windowId`. Only use when YOU spawned this window via `onda_window_new`.' },
         windowId: { type: 'string', description: 'Required when `closeWindow` is true.' },
@@ -1153,6 +1160,7 @@ const TOOL_MAP: Record<string, { method: string; mapParams?: (args: Record<strin
       snapshotDelay: args.snapshotDelay,
       readyPattern: args.readyPattern,
       readyTimeoutMs: args.readyTimeoutMs,
+      trust: args.trust,
     }),
   },
   onda_agent_prompt: {
@@ -1183,6 +1191,8 @@ const TOOL_MAP: Record<string, { method: string; mapParams?: (args: Record<strin
       terminalId: args.terminalId,
       workspaceId: args.workspaceId,
       killPty: args.killPty,
+      closePane: args.closePane,
+      paneId: args.paneId,
       unmountWorkspace: args.unmountWorkspace,
       closeWindow: args.closeWindow,
       windowId: args.windowId,
@@ -1217,10 +1227,11 @@ Layout model: Window ⊃ Workspace (root folder + panes, mounted as a tile in a 
 
 TO OPEN A WORKSPACE AND START AN AGENT SESSION (claude, codex, qwen, ...), ALWAYS use the agent_* flow:
   1. onda_agent_spawn(placement="workspace", workspaceRootPath=<path>, agentBin="claude", agentArgs=[flags only], readyPattern="❯|Welcome back|Try \\"")
-     → creates/locates + mounts the workspace, adds a pane, boots the TUI, blocks until ready. Returns terminalId + sessionId.
+     → locates the workspace BY FOLDER (or creates it), mounts it, starts the session in that folder, blocks until the screen settles. Returns terminalId + sessionId + state.
+     Read state before prompting: "ready" → go on. "trust_prompt" → first launch in that folder: ask the user, or spawn again with trust="accept" for a folder you created. "not_logged_in" / "onboarding" → the account needs /login or its first-run setup: tell the user, do not prompt. "timeout" → read the terminal. reusedPane/cwd say where the session started.
   2. onda_agent_prompt(terminalId, prompt) → writes the task into the TUI textbox and presses Enter. No shell involved: apostrophes, quotes and newlines are safe here.
   3. onda_agent_wait(sessionId, doneRegex, timeoutMs<=15000 in a loop) → wait for a sentinel.
-  4. onda_agent_close(sessionId) → detach (soft) or kill.
+  4. onda_agent_close(sessionId) → detach (soft); + killPty + closePane + workspaceId → kill and remove the pane (else it stays as "[Process exited]").
 Placement variants: "pane-split" (split the pane you are in), "same-workspace" (add a pane to an already-mounted workspaceId).
 Before spawning, check onda_pane_list / onda_terminal_list for an existing live agent in that workspace and reuse it instead of creating duplicates.
 
