@@ -2,20 +2,56 @@
 name: onda-mcp-usage
 description: Best practices for driving Onda (terminal emulator) from Claude Code via the `onda` MCP server (`mcp__onda__*`). Covers workspaces/windows/panes/terminals + buffer reading (read/subscribe/poll/wait_for/send_keys) + spatial awareness (layout/screenshot). Use whenever you call any `mcp__onda__*` tool or the user mentions Onda, pane, workspace, terminal listener, presence badge, inception loop (Claude controlling Onda from inside Onda). Triggers — onda mcp, drive onda, control onda terminal, show pane, workspace layout, onda screenshot, kai watcher, terminal listener.
 metadata:
-  version: 0.5.0
+  version: 0.6.0
   source: '@mindfullabai/onda-mcp'
 ---
 
 # Onda MCP usage skill
 
+## ⛔ STOP — read this before sending anything to a TUI
+
+**A trailing `\n` in `terminal_send` does NOT submit in a TUI textbox. It inserts a newline.**
+The text appears on screen, nothing runs, and the session *looks* started when it is not. Silent failure.
+
+| You want to… | ❌ Never | ✅ Always |
+|---|---|---|
+| Give a task to a TUI agent (claude, codex, qwen) | `terminal_send(text + "\n")` | `onda_agent_prompt(terminalId, prompt)` — writes **and** submits, atomically |
+| Press Enter on its own | `terminal_send("\n")` | `send_keys(["Enter"])` |
+| Run a command in a **plain shell** | — | `terminal_run` (text + \n) — fine here, a shell *does* execute on newline |
+
+The distinction is **shell vs TUI**, not which tool feels handier. A shell executes on newline; a TUI textbox does not.
+
+### If `agent_spawn` times out, do NOT fall back to manual assembly
+
+The MCP JSON-RPC client times out at ~60s, but **the backend usually completed anyway** — the workspace and pane are already there. The spawn is not lost.
+
+```
+1. terminal_list / workspace_list        → find what actually got created
+2. if no terminal in the pane:  workspace_add_terminal
+3. boot the agent:              send_keys(["claudea --dangerously-skip-permissions", "Enter"])
+4. wait:                        wait_for(readyPattern)
+5. THE PROMPT:                  agent_prompt(terminalId, prompt)   ← never terminal_send
+```
+
+Dropping to `terminal_send` after a spawn timeout is exactly how the 21 Sep 2026 failure happened: workspace right, agent booted, prompt typed into the box — and never submitted. Cost: a silent stall plus a round of debugging, on a task that was otherwise complete.
+
+**Rule of thumb: if the target is a TUI, the prompt goes through `agent_prompt`. No exceptions.**
+
+---
+
 This skill tells you **how to correctly use the `mcp__onda__*` tools** exposed by the `onda-mcp` server (~42 tools as of 0.4.0). It is installed alongside the MCP server. Without this guide you miss non-obvious patterns (subscribe vs read, direction semantics, multi-window orchestration, agent delegation atomic macro, inception loop).
 
 ## Compatibility note
 
+New in `@mindfullabai/onda-mcp@0.6.0`:
+- The server now ships MCP `instructions` (injected into the client system prompt): the agent_* flow is declared canonical there, `onda_launch_session` is marked deprecated in its own description. This skill is the long-form companion; the two must agree.
+- **Golden rule promoted to the tool layer**: `onda_agent_prompt` is the ONLY place for the task prompt. Never as argv (see "Never pass the prompt as argv" below — the 14 Jun 2026 failure).
+- Merged the hand-maintained additions that lived only in the installed 0.1.0 copy (argv/apostrophe rule, existing-terminal check).
+
 Breaking change in `@mindfullabai/onda-mcp@0.5.0`:
 - `onda_agent_spawn` no longer accepts a `prompt` argument. Prompt delivery is now a separate call, `onda_agent_prompt`, gated on a `readyPattern` sync. See "Pattern: agent delegation" below for the new four-tool flow. The split makes the pipeline resilient against TUI cold-start race conditions (trust dialog, splash screen, model picker) that previously caused the Enter keystroke to land on the wrong control.
 - `submitDelay` is removed from `onda_agent_spawn` (the spawn never auto-submits anymore). Use `agent_prompt` with `preWriteDelay` if you really need a beat between ready-sync and the write.
-- The legacy `onda_launch_session` is unchanged and still accepts the v2 `prompt` argv + auto-submit semantics; use it if you have existing callers you don't want to touch.
+- The legacy `onda_launch_session` is unchanged but **deprecated** (0.6.0 marks it so in the tool description). Its `prompt` argv path is exactly the apostrophe trap described below — migrate callers to `agent_spawn` + `agent_prompt`.
 
 New in `@mindfullabai/onda-mcp@0.4.0`:
 - **Agent delegation tools**: `onda_agent_spawn` + `onda_agent_wait` + `onda_agent_close` (0.5.0 added `onda_agent_prompt`). Replaces the 6-step manual dance. Three placement modes (workspace / pane-split / same-workspace).
@@ -61,7 +97,8 @@ Internal workspace layout = mosaic-component tree. Read it via `onda_workspace_l
 | "Press Ctrl+C / Up / Esc" | `onda_terminal_send_keys` (NOT `terminal_send` with `"\x03"`!) |
 | "Type a command and run it" | `onda_terminal_run` (text + \n) |
 | "Detach listener when done" | `onda_terminal_unsubscribe` (ALWAYS) |
-| "Spawn Claude Code in a new pane with a prompt" | `onda_terminal_spawn` with `bin=claude`, `args=[prompt]` |
+| "Open a workspace and start a Claude session with a task" | `onda_agent_spawn` (boot, flags only) → `onda_agent_prompt` (task text) — see "agent delegation" |
+| "Spawn a non-TUI command in a pane" | `onda_agent_spawn` with `execMode="run"`, full command in `agentArgs` |
 
 ## Pattern: working with terminal buffer (reads)
 
@@ -154,6 +191,8 @@ window_mount_workspace(workspaceId=X, windowId=new_id, direction="down")
 window_focus(new_id)  # bring the new window to front
 ```
 
+**A fresh window is not ready at once.** Builds with the fix-workspace-window change wait for it and report success only when the window itself shows the tile; if it never appears the call fails with the reason (and the mount is released). On older builds a mount sent right after `window_new` could be dropped while still answering `success: true` — and `window_list` / `workspace_layout` then agreed, because they read the same registry. There: wait ~3s after `window_new`, and confirm with `window_screenshot` or the window title.
+
 `direction` mirrors the Cmd+P picker semantics: `down` = stack below the anchor workspace (Enter), `right` = side-by-side (Cmd+Enter). `anchorWorkspaceId` lets you pick which existing tile to split next to; default is the target window's current active workspace.
 
 To drop a workspace from its window without destroying it:
@@ -178,6 +217,16 @@ Default `dataUrl=true` returns inline base64 (~1-2 MB), `dataUrl=false` writes a
 
 When you need to delegate work to another Claude session (or any TUI agent) — e.g. Alita @ work-hub asks Kai to refactor something in Orbit — use the four-tool flow: `onda_agent_spawn` → `onda_agent_prompt` → `onda_agent_wait` → `onda_agent_close`. The first two are the meat; `wait` and `close` are observation + cleanup.
 
+### Never pass the prompt as argv (GOLDEN RULE, 14 Jun 2026)
+
+`agentArgs`, `terminal_spawn.args`, `launch_session.prompt` all travel through the pane's **shell** before reaching the agent. A prompt containing an apostrophe (`quest'ordine`, `più'`, `don't`) breaks the zsh parser: the shell drops into `quote>` continuation and the agent never starts — and nothing tells you, the spawn just looks stuck. Italian prose makes this a near-certainty.
+
+`onda_agent_prompt` writes straight into the TUI textbox: **no shell, so apostrophes, quotes and newlines are safe**. Therefore: `agentArgs` = flags only (`["--dangerously-skip-permissions"]`, `["--model","opus"]`), the task always via `agent_prompt`. The only exception is `execMode="run"` for non-TUI binaries (bash, scripts), where the command line *is* the argv — keep those free of unbalanced quotes.
+
+### Check for an existing agent before spawning
+
+`agent_spawn` (and every lower-level path) creates a NEW pane even if the workspace already hosts a live agent. Before spawning: `onda_pane_list(workspaceId)` / `onda_terminal_list(workspaceId)` → if a claude session is already running there, `terminal_read` its tail to confirm it is at a prompt (not mid-task) and reuse it with `agent_prompt`. Spawn only when nothing suitable exists. Avoids orphan panes and duplicate sessions competing on the same repo.
+
 The flow is **split into spawn + prompt** intentionally. Booting a TUI like Claude costs 5-10s and runs through several transient states (trust dialog → splash → welcome → textbox). Submitting the prompt while the TUI is still in trust dialog state means the Enter goes to the dialog, not your prompt. Splitting the two phases gives you a sync point (`readyPattern`) and lets you retry just the prompt if delivery fails, without re-paying the cold start.
 
 ```
@@ -193,13 +242,21 @@ spawn = agent_spawn(
   readyTimeoutMs=20000,                        # generous: Claude cold-start
   subscribe=True,                              # default; returns sessionId for agent_wait
 )
-# → {sessionId, terminalId, paneId, workspaceId, windowId, ready: True, firstChunk, completedSteps:[...,'ready_sync']}
+# → {sessionId, terminalId, paneId, workspaceId, windowId, ready, state, cwd, reusedPane, firstChunk, completedSteps}
 
-if not spawn.ready:
-    # readyPattern didn't match — TUI is in an unexpected state.
-    # Inspect spawn.firstChunk to see where it got stuck (trust dialog?
-    # model picker? bin not found?). Decide whether to retry, send keystrokes
-    # to navigate the dialog, or give up and call agent_close.
+# Read `state`, not just `ready` (Onda builds before the fix-agent-spawn change
+# return no `state`: then fall back to `ready` + firstChunk as before).
+if spawn.state == "trust_prompt":
+    # First launch of Claude Code in that folder. Ask the user, or — for a
+    # folder you created yourself — spawn again with trust="accept".
+    ...
+elif spawn.state in ("not_logged_in", "onboarding"):
+    # The account needs /login or its first-run setup. Tell the user; do NOT
+    # send a prompt, it would be wasted. spawn.hint says what to do.
+    ...
+elif not spawn.ready:
+    # state "timeout": readyPattern never matched. terminal_read the pane to see
+    # where it got stuck (bin not found? model picker?), then decide.
     ...
 
 # 2. Submit the task prompt
@@ -220,10 +277,36 @@ result = agent_wait(
 # → {matched: True, match: "# DONE", tailContent: "...last 4KB..."}
 
 # 4. Clean up. SOFT (default): unsubscribe only, leave the PTY alive so the
-#    user can inspect. MEDIUM (+killPty + terminalId): terminate the agent.
+#    user can inspect. MEDIUM (+killPty + terminalId): terminate the agent;
+#    add closePane + workspaceId so the pane goes too instead of staying on
+#    screen as "[Process exited]" (a workspace keeps its last pane: then
+#    paneClosed=false, paneCloseSkipped says so).
 #    HARD (+unmountWorkspace + workspaceId): drop the workspace tile.
 agent_close(sessionId=spawn.sessionId)
+agent_close(sessionId=spawn.sessionId, terminalId=spawn.terminalId,
+            workspaceId=spawn.workspaceId, killPty=True, closePane=True)
 ```
+
+### Boot states: what `state` means
+
+`readyPattern` alone used to lie: the trust menu, the login notice and the first-run wizard all draw the `❯` the pattern looks for, so they came back `ready: True`. Now `agent_spawn` names the screen (only the output printed after its command counts, so a reused pane's old screens are ignored):
+
+| `state` | Screen | What to do |
+|---------|--------|------------|
+| `ready` | Prompt box up | `agent_prompt` |
+| `trust_prompt` | "Quick safety check… trust this folder?" (first launch in a folder) | Ask the user, or spawn with `trust="accept"` for a folder you created. `trust="reject"` answers no (Claude exits). Default `trust="report"` touches nothing. |
+| `not_logged_in` | "Not logged in · Please run /login", or the login-method picker | Tell the user to log in that account. Don't prompt. |
+| `onboarding` | First-run wizard of a fresh account/config dir (theme picker) | Tell the user to finish setup once. Don't prompt. |
+| `timeout` | Nothing recognisable within `readyTimeoutMs` | `terminal_read` the pane. |
+| `spawned` | No `readyPattern` given: nothing awaited | Only for non-TUI bins. |
+
+Non-ready states come with `needsUserAction: true` and a `hint`. Note: newer Claude Code preselects **"No, exit"** on the trust menu — never answer it with a blind `send_keys(["Enter"])`; use `trust="accept"`, which moves to "Yes" first.
+
+### Where the session starts (placement="workspace")
+
+- The workspace is found **by folder** (`workspaceRootPath`); `workspaceName` is only the label of a newly created one. Two workspaces may share a name — passing a name never picks a different folder.
+- The workspace's active pane is reused only when it sits idle at a shell prompt; it is `cd`'d into the root before the agent starts. A busy pane is left alone and a fresh one is added.
+- The response says `cwd` (the root the session started in) and `reusedPane`.
 
 ### doneRegex pattern: match across renderers
 
@@ -270,7 +353,7 @@ The session cursor advances on each poll, so you don't re-scan bytes from the pr
 Concretely: the alternative (single `agent_spawn` call that also submits the prompt) was tried — `claude --prompt` as argv mostly works for short prompts, but a multi-line / long prompt can land in the textbox while the trust dialog is still active, and the Enter goes to the dialog instead of submitting. The split flow has two side benefits:
 
 1. **Retry-on-failure is cheap**: if `agent_prompt` reports `errorCode: "not_ready"`, you re-call `agent_prompt` (potentially after `terminal_read` to see what's blocking) without ever touching the PTY-spawn cost.
-2. **TUI navigation between phases**: occasionally claude shows a model picker or "select profile" screen before the textbox. Between `agent_spawn` (which can target `readyPattern="select profile"`) and `agent_prompt`, the caller can send `send_keys(["Enter"])` to dismiss it, then proceed.
+2. **TUI navigation between phases**: occasionally claude shows a model picker or "select profile" screen before the textbox. Between `agent_spawn` (which can target `readyPattern="select profile"`) and `agent_prompt`, the caller can send keys to dismiss it, then proceed. The trust menu is the exception: use `trust="accept"` (see Boot states), not a blind Enter.
 
 ### Placement modes
 
@@ -293,7 +376,8 @@ Pre-`agent_spawn` (0.3.x and earlier) pattern. Still works, but verbose. New cod
 ```
 pane = workspace_add_terminal(workspaceId="...", direction="right")
 subscribe(pane.terminalId, "kai-watcher")     # BEFORE launch
-terminal_spawn(pane.paneId, bin="claude", args=["--dangerously-skip-permissions", "prompt..."])
+terminal_spawn(pane.paneId, bin="claude", args=["--dangerously-skip-permissions"])   # flags ONLY — never the prompt (see golden rule)
+# ...wait for the textbox, then terminal_send(text) + send_keys(["Enter"]) to deliver the task
 # Claude TUI shows "Trust this folder?" prompt
 send_keys(pane.terminalId, ["Enter"])         # confirm default highlighted (1. Yes)
 # From here Claude works — use wait_for with expected completion pattern
