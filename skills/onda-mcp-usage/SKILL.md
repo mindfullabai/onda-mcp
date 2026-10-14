@@ -2,7 +2,7 @@
 name: onda-mcp-usage
 description: Best practices for driving Onda (terminal emulator) from Claude Code via the `onda` MCP server (`mcp__onda__*`). Covers workspaces/windows/panes/terminals + buffer reading (read/subscribe/poll/wait_for/send_keys) + spatial awareness (layout/screenshot). Use whenever you call any `mcp__onda__*` tool or the user mentions Onda, pane, workspace, terminal listener, presence badge, inception loop (Claude controlling Onda from inside Onda). Triggers — onda mcp, drive onda, control onda terminal, show pane, workspace layout, onda screenshot, kai watcher, terminal listener.
 metadata:
-  version: 0.7.0
+  version: 0.7.1
   source: '@mindfullabai/onda-mcp'
 ---
 
@@ -400,6 +400,20 @@ else:
 
 The session cursor advances on each poll, so you don't re-scan bytes from the previous loop iteration; only new emissions are evaluated.
 
+### Watching an agent through the bus (and what the badge says)
+
+When the agent reports on the agent-bus (its `# DONE` arrives as a bus message), you do not need to loop on `agent_wait`. Two rules:
+
+1. **Check the terminal at least every 15 minutes**, whatever the bus says. Never wait longer (not 90 minutes) between two looks: an agent stuck on a permission prompt, a trust question, a crashed tool or a question to the user sends nothing on the bus, and 15 minutes is the most work you can afford to lose. A look = one `agent_wait(sessionId, doneRegex, timeoutMs=15000)` or `terminal_read(terminalId, lines=40)`. If the screen shows the agent waiting on input, act or tell the user.
+2. **Be honest about the subscription.** The pane header shows who is attached to a terminal:
+   - solid ring with a halo, solid wire → **reading**: polled in the last 90 s;
+   - dashed ring, dashed wire → **attached, not reading**: subscribed, but no poll for over 90 s (you are waiting on the bus between two looks);
+   - nothing → nobody attached.
+
+   "Attached, not reading" is the right state while you wait on the bus: do not fake activity with tight polls just to keep it solid. If you stop following the agent altogether, detach (`agent_close(sessionId)`, soft): a subscription nobody reads keeps buffering until the 30-minute idle eviction.
+
+Name the subscription after yourself and the job (`alita-nico-otto`), so the badge and its tooltip say who is attached.
+
 ### Why split spawn + prompt?
 
 Concretely: the alternative (single `agent_spawn` call that also submits the prompt) was tried — `claude --prompt` as argv mostly works for short prompts, but a multi-line / long prompt can land in the textbox while the trust dialog is still active, and the Enter goes to the dialog instead of submitting. The split flow has two side benefits:
@@ -572,7 +586,7 @@ Con: prompt cache miss every 15 min (cache threshold 5 min), non-zero token cost
 
 ## Useful knowledge
 
-- Pane header listener badge: blinks blue, click opens popover with "kick" to terminate the session
+- Pane header listener badge: who is attached to the terminal. Solid ring + halo = reading, dashed ring = attached but not reading (see "Watching an agent through the bus"); hover for name and last read. A packet runs on the wire each time a poll delivers output.
 - Onda-dev runs with bundle id `com.mariomosca.onda.dev` (sandboxed, no collision with prod)
 - Onda uses a **single UDS socket**, `~/.config/onda/onda.sock`. Only one Onda instance answers MCP at a time (the first to bind). If `app_info` shows odd data, you may be talking to a different instance.
 - The MCP server holds the socket binding until the master Onda app exits — restarting Onda via Cmd+Q + relaunch is how you "promote" another instance to master.

@@ -19,6 +19,10 @@ Needs an Onda build from 14 Oct 2026 or later (`onda-electron` branch `feat/mcp-
 - An archived workspace no longer stays the active one.
 - Free plan: the workspace cap counts active workspaces only (archiving frees a slot); restoring an archived workspace checks the cap again, from the UI, from `createWorkspace` on an archived folder and from `agent_spawn` (`errorCode: workspace_limit_reached`, and a worktree the spawn had just created is removed again).
 
+### Docs
+
+- Skill `onda-mcp-usage` 0.7.1: "Watching an agent through the bus" — check the terminal at least every 15 minutes even when the agent reports on the bus, and what the presence badge says (solid ring = reading, dashed ring = attached but not reading).
+
 ## 0.5.1
 
 Last published version.
