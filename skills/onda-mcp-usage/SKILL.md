@@ -2,7 +2,7 @@
 name: onda-mcp-usage
 description: Best practices for driving Onda (terminal emulator) from Claude Code via the `onda` MCP server (`mcp__onda__*`). Covers workspaces/windows/panes/terminals + buffer reading (read/subscribe/poll/wait_for/send_keys) + spatial awareness (layout/screenshot). Use whenever you call any `mcp__onda__*` tool or the user mentions Onda, pane, workspace, terminal listener, presence badge, inception loop (Claude controlling Onda from inside Onda). Triggers — onda mcp, drive onda, control onda terminal, show pane, workspace layout, onda screenshot, kai watcher, terminal listener.
 metadata:
-  version: 0.6.1
+  version: 0.7.0
   source: '@mindfullabai/onda-mcp'
 ---
 
@@ -43,7 +43,14 @@ This skill tells you **how to correctly use the `mcp__onda__*` tools** exposed b
 
 ## Compatibility note
 
-New in `@mindfullabai/onda-mcp@0.6.0`:
+New in `@mindfullabai/onda-mcp@0.6.0` (needs an Onda build from 14 Oct 2026 or later, branch `feat/mcp-worktree`; an older host answers `Unknown method` for `workspace.remove` and ignores `worktree` / `removeWorktree`):
+- **Worktrees as disposable workspaces**: `onda_agent_spawn(worktree={repoRoot, branch, from?})` creates or reuses the branch's git worktree next to the repo, trusts it for Claude Code and mounts it. `onda_agent_close(removeWorktree=true)` removes it only when clean and merged. See "Worktrees and disposable workspaces" below.
+- **`onda_workspace_remove`**: archive (default) or delete a workspace nobody is using.
+- **`onda_workspace_list` / `onda_workspace_locate`** now return `archivedAt`, `rootExists`, `hostId` and `worktree`; `workspace_list` hides archived workspaces unless `includeArchived: true`.
+- `onda_workspace_prune` and `unmountWhenEmpty` on spawn/close (see "Empty workspaces").
+- Fix: a spawn into a workspace it just created/mounted reuses that workspace's fresh shell even while the shell is still loading its profile. Before, the shell read as "busy", a second pane was added, and the orphan shell kept the workspace alive after the agent was gone.
+
+Also in 0.6.0:
 - The server now ships MCP `instructions` (injected into the client system prompt): the agent_* flow is declared canonical there, `onda_launch_session` is marked deprecated in its own description. This skill is the long-form companion; the two must agree.
 - **Golden rule promoted to the tool layer**: `onda_agent_prompt` is the ONLY place for the task prompt. Never as argv (see "Never pass the prompt as argv" below — the 14 Jun 2026 failure).
 - Merged the hand-maintained additions that lived only in the installed 0.1.0 copy (argv/apostrophe rule, existing-terminal check).
@@ -299,6 +306,38 @@ When no live terminal is left in a workspace after an agent's pane closes (agent
 - Editor and diff panes count as alive: a workspace holding an open file never unmounts by itself.
 - A user's shell that exits stays as "[Process exited]", as always: only agent panes clean up after themselves.
 - `"[Process exited]"` panes left next to live ones (exited while the workspace was not on screen, or before a new pane was added): `workspace_prune(workspaceId)` removes every dead terminal pane, whoever opened it, and applies the same unmount rule if nothing is left.
+
+### Worktrees and disposable workspaces
+
+Two or three agents on the same repo: one git worktree per branch, one agent per worktree. **Never two agents in the same folder.**
+
+```python
+# Spawn: creates <repoRoot>-<branch> (slashes → dashes) if the branch has no worktree yet,
+# with `git worktree add -b <branch> <path> <from>` (no -b if the branch exists);
+# marks it trusted in ~/.claude/.claude.json and ~/.claude-a/.claude.json (trust defaults to "accept");
+# names the workspace "<agentName or repo> · <branch>", mounts it, boots the agent.
+spawn = agent_spawn(placement="workspace", agentBin="claude", agentArgs=["--dangerously-skip-permissions"],
+                    agentName="kai-A",
+                    worktree={"repoRoot": "/Users/m/Projects/onda", "branch": "feat/login"},  # from= default master|main|develop
+                    readyPattern="❯|Welcome back|Try \"")
+# → {..., worktree: {path: "/Users/m/Projects/onda-feat-login", branch, created, branchCreated, from}}
+agent_prompt(spawn.terminalId, "...")
+# ... agent works and commits; you (or the user) merge the branch into master/main/develop ...
+
+# Close: kill, unmount once empty, then — only if the worktree is clean AND its HEAD is already in
+# master/main/develop — `git worktree remove` + `git worktree prune`, and the workspace is archived.
+agent_close(sessionId=spawn.sessionId, terminalId=spawn.terminalId, killPty=True,
+            workspaceId=spawn.workspaceId, removeWorktree=True)
+# → {worktreeRemoved: {path, branch, mergedInto}, workspaceArchived: True, ...}
+# → or {worktreeKept: {reason: "not_merged" | "dirty" | "mounted" | "live_panes" | ...}}: nothing touched.
+```
+
+- The branch is **never** deleted, merged or not.
+- Not merged yet? The worktree and the (unmounted) workspace stay. Spawn again with the same `worktree` to resume: the existing worktree is reused and the workspace remounted (restored if archived).
+- `worktree` needs `placement="workspace"`; it replaces `workspaceRootPath`. Errors come back as `errorCode: "worktree_failed"` (branch checked out in the main tree, path taken by another folder, not a repo).
+- `workspace_list` / `workspace_locate` show `worktree: {repoRoot, branch, isMain, clean, mergedInto}` for any workspace whose folder is a worktree root (null otherwise, and for remote workspaces).
+
+**Cleaning up dead workspaces.** `workspace_list()` → entries with `rootExists: false` (folder gone) and `mountedIn: null` → `workspace_remove(workspaceId)` archives them (reversible from the app; `permanent=True` deletes them from Onda, never the folder). It refuses a mounted workspace (`errorCode: "mounted"`: `workspace_unmount` first) and one with live terminals or unsaved editors (`errorCode: "live_panes"`, with the list). On free builds archived workspaces still count toward the workspace limit; delete with `permanent=True` if a spawn hits `workspace_limit_reached`.
 
 ### Boot states: what `state` means
 

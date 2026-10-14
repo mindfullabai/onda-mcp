@@ -472,10 +472,12 @@ const TOOLS = [
   {
     name: 'onda_workspace_list',
     description:
-      'List all workspaces. Each entry: { id, name, rootPath, mountedIn }. `mountedIn` is the windowId hosting that workspace, or null if not currently mounted. Use this with onda_window_list to map workspaces ↔ windows.',
+      'List workspaces (archived ones only with includeArchived). Each entry: { id, name, rootPath, paneCount, hostId, archivedAt, mountedIn, rootExists, worktree }. `mountedIn` is the windowId hosting that workspace, or null if not currently mounted. `archivedAt` is a timestamp or null. `rootExists` is false when the folder is gone (a dead workspace: a removed worktree, a deleted checkout) and null for remote workspaces. `worktree` (null unless the folder is the root of a git worktree): { repoRoot, branch, isMain, clean, mergedInto } — isMain true for the repo\'s main tree; clean = no staged/unstaged/untracked changes; mergedInto = the first of master/main/develop that already contains HEAD (null if none, always null for the main tree). Use this with onda_window_list to map workspaces ↔ windows, and with onda_workspace_remove to clean up.',
     inputSchema: {
       type: 'object' as const,
-      properties: {},
+      properties: {
+        includeArchived: { type: 'boolean', description: 'Default false. When true, archived workspaces are listed too (with their archivedAt).' },
+      },
     },
   },
   {
@@ -549,7 +551,7 @@ const TOOLS = [
   {
     name: 'onda_workspace_locate',
     description:
-      'Find a workspace by name, id, or rootPath without listing them all. Returns { workspace: { id, name, rootPath, mountedIn } } or { workspace: null }. mountedIn is the windowId currently hosting the workspace, or null if not mounted.',
+      'Find a workspace by name, id, or rootPath without listing them all (archived ones included). Returns { workspace: { id, name, rootPath, hostId, archivedAt, mountedIn, rootExists, worktree } } or { workspace: null }. mountedIn is the windowId currently hosting the workspace, or null if not mounted. `worktree` (null unless the folder is the root of a git worktree): { repoRoot, branch, isMain, clean, mergedInto } — isMain true for the repo\'s main tree; clean = no staged/unstaged/untracked changes; mergedInto = the first of master/main/develop that already contains HEAD (null if none, always null for the main tree).',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -614,6 +616,19 @@ const TOOLS = [
       type: 'object' as const,
       properties: {
         workspaceId: { type: 'string', description: 'Workspace to unmount.' },
+      },
+      required: ['workspaceId'],
+    },
+  },
+  {
+    name: 'onda_workspace_remove',
+    description:
+      'Archive (default) or delete a workspace that nobody is using: it must not be mounted in any window, none of its terminals may have a live process, and no editor in it may have unsaved changes. Otherwise nothing happens and the result says why: errorCode "mounted" (+ windowId: unmount it first with onda_workspace_unmount), "live_panes" (+ livePanes [{paneId, terminalId}] and dirtyEditors [{paneId, filePath}]), "workspace_not_found". Archived workspaces leave the rail and onda_workspace_list but can be restored from the app (and onda_agent_spawn on the same folder restores them). `permanent: true` deletes the workspace from Onda instead (never the folder on disk). Typical use: workspaces whose `rootExists` is false in onda_workspace_list. Returns { success, workspaceId, action: "archived" | "deleted" }.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        workspaceId: { type: 'string', description: 'Workspace to archive or delete.' },
+        permanent: { type: 'boolean', description: 'Default false (archive, reversible). true: delete it from Onda. The folder on disk is never touched.' },
       },
       required: ['workspaceId'],
     },
@@ -826,6 +841,16 @@ const TOOLS = [
           type: 'boolean',
           description: 'What happens when this agent\'s process ends and nothing alive is left in the workspace. The agent\'s pane always goes (no "[Process exited]" left behind). Default: the workspace leaves the mosaic if THIS spawn mounted it, and stays (empty) if it was already mounted. true: always unmount once empty. false: never. Unmount is not delete — the workspace stays in the list.',
         },
+        worktree: {
+          type: 'object',
+          description: 'Run the agent in its own git worktree (placement="workspace" only; replaces workspaceRootPath). If no linked worktree has `branch` checked out, one is created next to the repo at `<repoRoot>-<branch>` (slashes in the branch become dashes: repo `~/P/onda` + branch `feat/x` → `~/P/onda-feat-x`), with `git worktree add -b <branch> <path> <from>` for a new branch, or without -b if the branch exists. An existing worktree for that branch is reused. The folder is marked trusted in ~/.claude/.claude.json and ~/.claude-a/.claude.json, and `trust` defaults to "accept". The workspace is named "<agentName or repo> · <branch>" unless workspaceName is given. The result has `worktree: { path, branch, created, branchCreated, from? }`. Fails with errorCode "worktree_failed" (e.g. branch checked out in the main tree, path taken by another folder). One agent per worktree: never spawn two in the same folder.',
+          properties: {
+            repoRoot: { type: 'string', description: 'Root of the repo (its main tree; a linked worktree of it also works).' },
+            branch: { type: 'string', description: 'Branch to work on, e.g. "feat/login".' },
+            from: { type: 'string', description: 'Start point for a new branch. Default: the first of master, main, develop that exists.' },
+          },
+          required: ['repoRoot', 'branch'],
+        },
         subscribe: {
           type: 'boolean',
           description: 'Attach a listener and return a `sessionId` ready for `onda_agent_wait`. Default true. Also lights up the presence badge in the pane header.',
@@ -922,6 +947,7 @@ const TOOLS = [
         unmountWorkspace: { type: 'boolean', description: 'Default false. When true, the workspace is dropped from its window\'s mosaic. The workspace itself still exists in the global list.' },
         closeWindow: { type: 'boolean', description: 'Default false. When true, the host window is closed via `BrowserWindow.close()`. Requires `windowId`. Only use when YOU spawned this window via `onda_window_new`.' },
         windowId: { type: 'string', description: 'Required when `closeWindow` is true.' },
+        removeWorktree: { type: 'boolean', description: 'Default false. For an agent spawned with `worktree`: after the kill, unmount the workspace once empty, then — only if the worktree is clean and its branch is already in master/main/develop — run `git worktree remove` + `git worktree prune` and archive the workspace. The result has `worktreeRemoved: { path, branch, mergedInto }` + `workspaceArchived`, or `worktreeKept: { reason }` with reason "dirty", "not_merged", "mounted", "live_panes", "main_worktree", "not_a_worktree", "remote_workspace", "workspace_unknown" or "git_error" (nothing is touched then). The branch is never deleted. Pass `workspaceId` (from spawn) to be safe.' },
       },
     },
   },
@@ -1136,6 +1162,7 @@ const TOOL_MAP: Record<string, { method: string; mapParams?: (args: Record<strin
   onda_window_mount_workspace: { method: 'window.mountWorkspace' },
   onda_workspace_unmount: { method: 'workspace.unmount' },
   onda_workspace_prune: { method: 'workspace.prune' },
+  onda_workspace_remove: { method: 'workspace.remove' },
 
   // Advanced spawn + macro
   onda_terminal_spawn: {
@@ -1181,6 +1208,7 @@ const TOOL_MAP: Record<string, { method: string; mapParams?: (args: Record<strin
       readyTimeoutMs: args.readyTimeoutMs,
       trust: args.trust,
       unmountWhenEmpty: args.unmountWhenEmpty,
+      worktree: args.worktree,
     }),
   },
   onda_agent_prompt: {
@@ -1217,6 +1245,7 @@ const TOOL_MAP: Record<string, { method: string; mapParams?: (args: Record<strin
       unmountWhenEmpty: args.unmountWhenEmpty,
       closeWindow: args.closeWindow,
       windowId: args.windowId,
+      removeWorktree: args.removeWorktree,
     }),
   },
 
@@ -1254,6 +1283,7 @@ TO OPEN A WORKSPACE AND START AN AGENT SESSION (claude, codex, qwen, ...), ALWAY
   3. onda_agent_wait(sessionId, doneRegex, timeoutMs<=15000 in a loop) → wait for a sentinel.
   4. onda_agent_close(sessionId) → detach (soft); + killPty + terminalId → kill it, and the spawned pane goes with it. A workspace the spawn mounted leaves the mosaic once nothing alive is left in it (unmountWhenEmpty overrides). Leftover "[Process exited]" panes: onda_workspace_prune(workspaceId).
 Placement variants: "pane-split" (split the pane you are in), "same-workspace" (add a pane to an already-mounted workspaceId).
+Parallel agents on one repo: onda_agent_spawn(worktree={repoRoot, branch}) creates/reuses the branch's worktree next to the repo, trusts it and mounts it; one agent per worktree. onda_agent_close(killPty, terminalId, workspaceId, removeWorktree=true) removes it only if clean and merged into master/main/develop (else worktreeKept.reason), and archives the workspace. Dead workspaces (rootExists=false in onda_workspace_list): onda_workspace_remove.
 Before spawning, check onda_pane_list / onda_terminal_list for an existing live agent in that workspace and reuse it instead of creating duplicates.
 
 DO NOT: pass the task prompt as an argv element (agentArgs, terminal_spawn args, launch_session prompt) — a single apostrophe breaks zsh parsing and the prompt never reaches the agent. DO NOT use onda_launch_session (deprecated; same backend, worse ergonomics). DO NOT hand-assemble workspace_create → window_mount_workspace → workspace_add_terminal → terminal_spawn → send_keys unless agent_spawn returned an error you must work around.
