@@ -219,7 +219,7 @@ const TOOLS = [
   {
     name: 'onda_agent_sessions',
     description:
-      'List live agent sessions (Claude Code and friends) known to Onda, as reported by the Agent Team OS hook. Each entry: { sessionId, terminalId, paneId, workspaceId, agent, status, lastTool, lastTarget, ctxPct, inboxPending, since, lastSeen }. This is how an agent can see its own team: who is working, who is waiting, and where. Status is busy | waiting | idle | error.',
+      'List live agent sessions (Claude Code and friends) known to Onda, as reported by the Agent Team OS hook and the screen. Each entry: { sessionId, terminalId, paneId, workspaceId, agent, status, state, stateSince, mounted, windowId, host, lastTool, lastTarget, ctxPct, inboxPending, since, lastSeen }. This is how an agent can see its own team: who is working, who is stuck, and where. `state` says WHO IS STUCK: working | idle | waiting_permission | waiting_answer | pending_input | exited. pending_input = text sits in the prompt box, never sent (no Enter), and nothing has moved for 60 s: the agent is NOT working. stateSince is an ISO timestamp (for pending_input, when the box went quiet). mounted = the workspace is in a window mosaic (windowId says which; false/null = alive but off screen). host is always \"laptop\" for now. Check `state` before saying an agent is working. `status` (busy | waiting | idle | error) is kept for compatibility and is coarser: a pending_input session shows status idle. Needs an Onda build from 14 Oct 2026 or later (older hosts return status only).',
     inputSchema: { type: 'object' as const, properties: {} },
   },
   {

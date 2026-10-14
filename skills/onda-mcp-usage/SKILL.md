@@ -2,7 +2,7 @@
 name: onda-mcp-usage
 description: Best practices for driving Onda (terminal emulator) from Claude Code via the `onda` MCP server (`mcp__onda__*`). Covers workspaces/windows/panes/terminals + buffer reading (read/subscribe/poll/wait_for/send_keys) + spatial awareness (layout/screenshot). Use whenever you call any `mcp__onda__*` tool or the user mentions Onda, pane, workspace, terminal listener, presence badge, inception loop (Claude controlling Onda from inside Onda). Triggers — onda mcp, drive onda, control onda terminal, show pane, workspace layout, onda screenshot, kai watcher, terminal listener.
 metadata:
-  version: 0.7.1
+  version: 0.7.2
   source: '@mindfullabai/onda-mcp'
 ---
 
@@ -413,6 +413,24 @@ When the agent reports on the agent-bus (its `# DONE` arrives as a bus message),
    "Attached, not reading" is the right state while you wait on the bus: do not fake activity with tight polls just to keep it solid. If you stop following the agent altogether, detach (`agent_close(sessionId)`, soft): a subscription nobody reads keeps buffering until the 30-minute idle eviction.
 
 Name the subscription after yourself and the job (`alita-nico-otto`), so the badge and its tooltip say who is attached.
+
+### Chi è fermo: check `state` before you say "Kai works"
+
+`onda_agent_sessions` returns a `state` for every session. Read it BEFORE telling Mario that an agent is working, and before deciding to keep waiting on the bus:
+
+| `state` | What it means | What you do |
+|---|---|---|
+| `working` | A tool is running or the screen shows the activity line. | Wait. |
+| `idle` | At the prompt, empty box (or text typed less than 60 s ago). | Fine if it just reported; if you expected work, look. |
+| `pending_input` | **Text sits in the box and nobody pressed Enter, for 60 s+.** The agent is not working. | `terminal_read` to see the text, then `terminal_send_keys(["Enter"])` if it is yours to send; otherwise tell Mario. This is the stuck state that looks like `idle` in `status`. |
+| `waiting_permission` / `waiting_answer` | A permission prompt or a question is on screen. | Read the screen; answer it or tell Mario. |
+| `exited` | The session ended; the pane may still be alive. | Close or respawn. |
+
+`stateSince` is an ISO timestamp: "stuck for N min" is `now - stateSince`. `mounted: false` means the agent is alive but its workspace is not in any window (Mario cannot see it): the pane is reachable with `onda_window_mount_workspace(workspaceId, windowId)`, or Mario can use the band's "Rimetti nel mosaico". `host` is always `laptop` today.
+
+The 15-minute rule above still holds: `state` is a faster signal, not a replacement. A stuck agent that Onda cannot classify (a custom TUI, a screen it does not recognise) still reads `idle`.
+
+On Mario's screen the same states are badges with their own SHAPE (text cursor = text left in the box, shield = permission, speech bubble = question) and a tooltip like "Testo fermo da 12 min"; after 60 s a `pending_input` also raises one toast per episode.
 
 ### Why split spawn + prompt?
 

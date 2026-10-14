@@ -11,6 +11,7 @@ Needs an Onda build from 14 Oct 2026 or later (`onda-electron` branch `feat/mcp-
 - **`onda_workspace_remove`**: archives (default) or deletes (`permanent`) a workspace that is not mounted and holds no live terminal or unsaved editor; otherwise refuses with `errorCode` `mounted` / `live_panes`.
 - **`onda_workspace_list`** takes `includeArchived` (default false) and every entry carries `archivedAt`, `hostId`, `rootExists` and `worktree: { repoRoot, branch, isMain, clean, mergedInto }`. `onda_workspace_locate` returns the same fields.
 - **`onda_workspace_prune`** and `unmountWhenEmpty` on `onda_agent_spawn` / `onda_agent_close`: dead "[Process exited]" panes go, and a workspace the agent mounted leaves the mosaic once nothing alive is left.
+- **`onda_agent_sessions`** answers WHO IS STUCK: every entry carries `state` (`working | idle | waiting_permission | waiting_answer | pending_input | exited`), `stateSince`, `mounted`, `windowId` and `host`. `pending_input` is text left in the prompt box without Enter for 60 s. `status` stays for compatibility. Needs an Onda build from `feat/agent-pending-input`.
 - The server ships MCP `instructions`; `onda_launch_session` is marked deprecated.
 
 ### Fixes (host side)
