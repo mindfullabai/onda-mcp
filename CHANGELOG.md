@@ -17,6 +17,7 @@ Needs an Onda build from 14 Oct 2026 or later (`onda-electron` branch `feat/mcp-
 
 - A spawn into a workspace it just created or mounted reuses that workspace's fresh shell even while the shell is still loading its profile. Before, the shell read as busy, a second pane was added, and the orphan shell kept the workspace alive after the agent was gone.
 - An archived workspace no longer stays the active one.
+- Free plan: the workspace cap counts active workspaces only (archiving frees a slot); restoring an archived workspace checks the cap again, from the UI, from `createWorkspace` on an archived folder and from `agent_spawn` (`errorCode: workspace_limit_reached`, and a worktree the spawn had just created is removed again).
 
 ## 0.5.1
 
