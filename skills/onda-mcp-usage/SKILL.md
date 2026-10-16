@@ -2,7 +2,7 @@
 name: onda-mcp-usage
 description: Best practices for driving Onda (terminal emulator) from Claude Code via the `onda` MCP server (`mcp__onda__*`). Covers workspaces/windows/panes/terminals + buffer reading (read/subscribe/poll/wait_for/send_keys) + spatial awareness (layout/screenshot). Use whenever you call any `mcp__onda__*` tool or the user mentions Onda, pane, workspace, terminal listener, presence badge, inception loop (Claude controlling Onda from inside Onda). Triggers — onda mcp, drive onda, control onda terminal, show pane, workspace layout, onda screenshot, kai watcher, terminal listener.
 metadata:
-  version: 0.7.2
+  version: 0.7.3
   source: '@mindfullabai/onda-mcp'
 ---
 
@@ -234,6 +234,14 @@ When you need to delegate work to another Claude session (or any TUI agent) — 
 ### Check for an existing agent before spawning
 
 `agent_spawn` (and every lower-level path) creates a NEW pane even if the workspace already hosts a live agent. Before spawning: `onda_pane_list(workspaceId)` / `onda_terminal_list(workspaceId)` → if a claude session is already running there, `terminal_read` its tail to confirm it is at a prompt (not mid-task) and reuse it with `agent_prompt`. Spawn only when nothing suitable exists. Avoids orphan panes and duplicate sessions competing on the same repo.
+
+### Reuse the workspace: one folder, one workspace (16 Oct 2026)
+
+**The priority is to reuse a workspace that exists, never to create a second one for the same folder.**
+
+1. **Look the workspace up by `rootPath` first**: `onda_workspace_locate(rootPath=<folder>)`. Onda matches by real path, so `~/work-hub/Projects/X` (symlink) and `~/Projects/X` are the same workspace, and so are `onda` and `Onda` on APFS. If it exists and `mountedIn` is set, spawn with `placement="same-workspace", workspaceId=<id>`. With `placement="workspace"` Onda now does the same by itself (the mounted workspace gets a NEW pane, `reusedWorkspace: true`), but locating first tells you what is already running there.
+2. **A second copy of an agent** (e.g. Kai B next to Kai) opens in **that agent's workspace**, with its own bus slug in the command: `agentArgs: ["-lc", "export AB_SESSION_SLUG=<name>; exec claude --model opus --dangerously-skip-permissions"]` (`agentBin: "zsh"`). **Never** in a subfolder created for the purpose: a subfolder is a different workspace, a different Claude project and a different bus identity.
+3. Older Onda builds compared the path as text and created duplicates. If `onda_workspace_list` shows two workspaces for one folder, do not create a third: use the mounted / live one. Cleaning duplicates up is the user's (or Alita's) call, not the spawning agent's.
 
 The flow is **split into spawn + prompt** intentionally. Booting a TUI like Claude costs 5-10s and runs through several transient states (trust dialog → splash → welcome → textbox). Submitting the prompt while the TUI is still in trust dialog state means the Enter goes to the dialog, not your prompt. Splitting the two phases gives you a sync point (`readyPattern`) and lets you retry just the prompt if delivery fails, without re-paying the cold start.
 
