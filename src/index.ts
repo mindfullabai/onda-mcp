@@ -899,6 +899,10 @@ const TOOLS = [
           type: 'number',
           description: 'Optional ms delay after sending Enter, before returning. Useful if you want to give the agent a moment to start streaming output that the next caller-side step (terminal_read snapshot, agent_wait) will need.',
         },
+        onlyIfIdle: {
+          type: 'boolean',
+          description: 'Default false. If true, nothing is written unless the agent is idle: refuses with { success:false, errorCode:"not_idle", reason, completedSteps:[] } where reason is busy (agent working), asking (permission/answer prompt on screen), has_text (the human has text in the box, even typed seconds ago) or no_session (no agent session known on that terminal). For whoever wakes an idle session without writing over the user.',
+        },
       },
       required: ['terminalId', 'prompt'],
     },
@@ -1221,6 +1225,7 @@ const TOOL_MAP: Record<string, { method: string; mapParams?: (args: Record<strin
       readyTimeoutMs: args.readyTimeoutMs,
       preWriteDelay: args.preWriteDelay,
       postSubmitDelay: args.postSubmitDelay,
+      onlyIfIdle: args.onlyIfIdle,
     }),
   },
   onda_agent_wait: {
