@@ -641,6 +641,7 @@ Workspace:
 Pane:
 - `onda_pane_list` — panes in window/workspace
 - `onda_pane_focus` — focus pane
+- `onda_pane_attach` — re-attach a live orphan terminal (alive in `onda_terminal_list`, in no workspace layout) to a new pane of a mounted workspace
 - `onda_pane_split` / `vsplit` / `hsplit` — low-level split (prefer `workspace_add_terminal` with `direction`)
 - `onda_pane_close` — close pane
 

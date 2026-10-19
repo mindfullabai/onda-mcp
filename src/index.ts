@@ -166,6 +166,20 @@ const TOOLS = [
     },
   },
   {
+    name: 'onda_pane_attach',
+    description:
+      'Re-attach a live terminal (PTY) that no pane shows any more to a new pane of a workspace, without spawning a new shell: the process, its history and its scrollback stay. Use it when onda_terminal_list shows a terminal alive whose paneId is in no workspace (e.g. after moving workspaces between windows a workspace lost its pane layout), or to bring a terminal into another workspace. The workspace must be mounted in a window (onda_window_mount_workspace first). Refuses with errorCode "already_shown" (with the workspaceId/paneId/windowId that shows it) when a pane of a mounted workspace already shows that terminal, "not_alive" for a dead or unknown terminal, "workspace_not_mounted" when the workspace is in no window. Returns { success, terminalId, paneId, workspaceId, windowId }. The new pane does not take the keyboard unless focus: true.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        terminalId: { type: 'string', description: 'The live terminal to show (from onda_terminal_list).' },
+        workspaceId: { type: 'string', description: 'Workspace that gets the new pane (from onda_workspace_list).' },
+        focus: { type: 'boolean', description: 'Give the new pane the keyboard. Default false.' },
+      },
+      required: ['terminalId', 'workspaceId'],
+    },
+  },
+  {
     name: 'onda_pane_focus',
     description: 'Focus (activate) a specific pane by its ID.',
     inputSchema: {
@@ -866,7 +880,7 @@ const TOOLS = [
   {
     name: 'onda_agent_prompt',
     description:
-      'Submit a task prompt to an agent that was previously spawned with `onda_agent_spawn`. Use this once `onda_agent_spawn` has returned with `ready: true` (TUI textbox is up and accepting keystrokes). Writes the prompt into the PTY (multi-line text goes through bracketed paste so the TUI does not swallow the submitting Enter), then optionally sends Enter.\n\n**The submission is verified, not assumed.** The result carries `submitted`: true when the TUI was seen to accept the prompt, false when it was not. On false the text was delivered but is most likely still parked in the textbox as `[Pasted text #N]` — `success` is false too, and the fix is to read the terminal and send Enter via `onda_terminal_send_keys(["Enter"])`. `completedSteps` contains "submit" only when submission was actually observed. Idempotent in the sense that you can call it multiple times — useful for multi-line drafts (each call with `submitWith: "none"` except the last) or for retry-on-blocker scenarios.',
+      'Submit a task prompt to an agent that was previously spawned with `onda_agent_spawn`. Use this once `onda_agent_spawn` has returned with `ready: true` (TUI textbox is up and accepting keystrokes). Writes the prompt into the PTY as one bracketed paste (always, short or long: a raw write is taken for a paste by the TUI and its Enter becomes a newline), waits until the textbox shows it, then sends Enter as a separate write and checks the rendered textbox.\n\n**The submission is verified, not assumed.** The result carries `submitted`: true when the TUI was seen to accept the prompt, false when it was not. On false (`reason`: `still_in_box` when the prompt is still in the textbox after one retry of Enter, `no_evidence` when nothing showed the turn starting) `success` is false too: read the terminal before acting, and send Enter via `onda_terminal_send_keys(["Enter"])` only if the prompt is still in the box. `completedSteps` contains "submit" only when submission was actually observed. Idempotent in the sense that you can call it multiple times — useful for multi-line drafts (each call with `submitWith: "none"` except the last) or for retry-on-blocker scenarios.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -1096,6 +1110,7 @@ const TOOL_MAP: Record<string, { method: string; mapParams?: (args: Record<strin
   onda_pane_list: { method: 'pane.list' },
   onda_pane_close: { method: 'pane.close' },
   onda_pane_focus: { method: 'pane.focus' },
+  onda_pane_attach: { method: 'pane.attach' },
 
   // Terminal
   // Spatial awareness
