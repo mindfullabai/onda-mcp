@@ -57,6 +57,7 @@ Same MCP config format as above.
 | `onda_pane_list` | List all panes in the active tab. Returns pane IDs, terminal IDs, and content types. |
 | `onda_pane_close` | Close a specific pane by ID. If no ID given, closes the active pane. |
 | `onda_pane_focus` | Focus (activate) a specific pane by its ID. |
+| `onda_pane_attach` | Re-attach a live terminal that no pane shows (an orphan) to a new pane of a mounted workspace, without a new shell. |
 
 ### Terminal Control
 
