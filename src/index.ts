@@ -149,7 +149,7 @@ const TOOLS = [
   {
     name: 'onda_pane_list',
     description:
-      'List all panes in the active tab. Returns pane IDs, terminal IDs, and content types. Use this to discover available terminals before sending commands.',
+      'List the panes of the focused window: { id, contentType, terminalId, cwd, tabId, workspaceId, live_reason, live_process }. `live_reason` says what keeps it live: "agent" (an agent session: claude, codex, qwen…), "process" (another foreground program: a build, a dev server, a script) or "none" (a shell at its prompt — not live), with the program in `live_process`. Use this to discover terminals before sending commands, and to find an agent already running before spawning one.',
     inputSchema: {
       type: 'object' as const,
       properties: {},
@@ -221,7 +221,7 @@ const TOOLS = [
   {
     name: 'onda_terminal_list',
     description:
-      'List active terminals. Each entry: { id, pid, cwd, alive, workspaceId, paneId, tabId, windowId }. Use the optional filters to scope the list. Essential to disambiguate which terminal belongs to which workspace/window when many are alive — no more cwd reverse-lookup.',
+      'List active terminals. Each entry: { id, pid, cwd, alive, workspaceId, paneId, tabId, windowId, live_reason, live_process }. `live_reason` says what keeps it live: "agent" (an agent session: claude, codex, qwen…), "process" (another foreground program: a build, a dev server, a script) or "none" (a shell at its prompt — not live), with the program in `live_process`. Use the optional filters to scope the list. Essential to disambiguate which terminal belongs to which workspace/window when many are alive — no more cwd reverse-lookup.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -486,7 +486,7 @@ const TOOLS = [
   {
     name: 'onda_workspace_list',
     description:
-      'List workspaces (archived ones only with includeArchived). Each entry: { id, name, rootPath, paneCount, hostId, archivedAt, mountedIn, rootExists, worktree }. `mountedIn` is the windowId hosting that workspace, or null if not currently mounted. `archivedAt` is a timestamp or null. `rootExists` is false when the folder is gone (a dead workspace: a removed worktree, a deleted checkout) and null for remote workspaces. `worktree` (null unless the folder is the root of a git worktree): { repoRoot, branch, isMain, clean, mergedInto } — isMain true for the repo\'s main tree; clean = no staged/unstaged/untracked changes; mergedInto = the first of master/main/develop that already contains HEAD (null if none, always null for the main tree). Use this with onda_window_list to map workspaces ↔ windows, and with onda_workspace_remove to clean up.',
+      'List workspaces (archived ones only with includeArchived). Each entry: { id, name, rootPath, paneCount, hostId, archivedAt, mountedIn, rootExists, worktree, live_reason, live_process, live_processes }. A workspace is live only when one of its terminals runs an agent (`live_reason: "agent"`) or a non-shell process (`"process"`); idle shells do not count (`"none"`). `live_process` is the strongest program, `live_processes` all of them, agents first. `mountedIn` is the windowId hosting that workspace, or null if not currently mounted. `archivedAt` is a timestamp or null. `rootExists` is false when the folder is gone (a dead workspace: a removed worktree, a deleted checkout) and null for remote workspaces. `worktree` (null unless the folder is the root of a git worktree): { repoRoot, branch, isMain, clean, mergedInto } — isMain true for the repo\'s main tree; clean = no staged/unstaged/untracked changes; mergedInto = the first of master/main/develop that already contains HEAD (null if none, always null for the main tree). Use this with onda_window_list to map workspaces ↔ windows, and with onda_workspace_remove to clean up.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -497,7 +497,7 @@ const TOOLS = [
   {
     name: 'onda_workspace_create',
     description:
-      'Create a new workspace. Workspaces group tabs by project. If a local workspace already has that folder (same real path, symlinks and letter case included) it is returned instead (`existing: true`, `workspaceId`), never duplicated. Pass hostId to create it on a remote host: rootPath is then a path ON THAT HOST, and every pane in the workspace runs there. The host must already be configured in Onda (Settings > Remotes) — use onda_remote_list to see which.',
+      'Create a new workspace. It is born EMPTY: no terminal is opened, its tile shows the welcome screen (recent sessions, new session, open terminal). To run an agent there use onda_agent_spawn (which creates the pane); for a plain shell, onda_workspace_add_terminal. Workspaces group panes by project folder. If a local workspace already has that folder (same real path, symlinks and letter case included) it is returned instead (`existing: true`, `workspaceId`), never duplicated. Pass hostId to create it on a remote host: rootPath is then a path ON THAT HOST, and every pane in the workspace runs there. The host must already be configured in Onda (Settings > Remotes) — use onda_remote_list to see which.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -548,18 +548,28 @@ const TOOLS = [
   },
   {
     name: 'onda_workspace_tile',
-    description: 'Set the workspace-level tiling layout. Controls how workspaces are arranged in the main window.',
+    description:
+      'Arrange the workspaces mounted in one window so they are all visible. Default: a grid (2 → side by side, 3-4 → 2×2, 5-6 → 3×2…) with the anchor top left and the others in order of opening — the orchestrator (e.g. work-hub) top left, its delegated agents in the other cells. Call it once after spawning several agents, passing your own workspace as `anchorWorkspaceId` (from onda_context). Only rearranges: it never mounts or detaches a workspace. Returns { success, windowId, layout, grid?: {rows, cols}, order: [{workspaceId, name}] }.',
     inputSchema: {
       type: 'object' as const,
       properties: {
-        workspaceId: { type: 'string', description: 'Workspace ID. Omit to use active workspace.' },
         layout: {
           type: 'string',
-          enum: ['single', 'split-h', 'split-v', 'quad'],
-          description: 'Layout mode: single (one workspace), split-h (horizontal split), split-v (vertical split), quad (four quadrants).',
+          enum: ['grid', 'columns', 'rows', 'quad', 'split-v', 'split-h'],
+          description: 'Default "grid". "columns": all side by side. "rows": all stacked. Old names still accepted: quad = grid, split-v = columns, split-h = rows.',
         },
+        anchorWorkspaceId: {
+          type: 'string',
+          description: 'Workspace that goes top left (usually yours). Default: the first one opened in that window. Also picks the window when windowId is omitted.',
+        },
+        order: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Optional workspace ids to place right after the anchor, in this order; the rest follow in order of opening.',
+        },
+        windowId: { type: 'string', description: 'Window to arrange. Default: the anchor\'s window, else the focused one.' },
+        workspaceId: { type: 'string', description: 'Old name of anchorWorkspaceId.' },
       },
-      required: ['layout'],
     },
   },
   {
@@ -772,7 +782,7 @@ const TOOLS = [
   {
     name: 'onda_agent_spawn',
     description:
-      'Boot an agent in a workspace+pane and return once the TUI is ready to accept a prompt. Does NOT submit a task — use `onda_agent_prompt` after spawn for that. Splitting bootstrap and prompt delivery makes the flow resilient: you can retry the prompt without re-paying the agent cold-start (5-10s for Claude), and you can intercept unexpected TUI states between the two steps.\n\n**Check `state`, not only `ready`.** With a `readyPattern`, the response says what the screen really is: "ready" (prompt box up), "trust_prompt" (Claude Code asks whether to trust the folder — happens the first time in a folder), "not_logged_in" ("Not logged in · Please run /login" or the login-method picker), "onboarding" (first-run setup of a fresh account/config dir), or "timeout". Those three screens also draw the `❯` a ready pattern looks for, so before this field they came back as ready. Only `state: "ready"` means `onda_agent_prompt` will land; the others come with `needsUserAction: true` and a `hint`. Output is judged from the moment the command is written, so a reused pane\'s old screens do not count. Use `trust: "accept"` to let the spawn answer the folder question itself.\n\n**Where the session starts.** placement="workspace" locates the workspace by `workspaceRootPath` (the folder is the identity; `workspaceName` is only a label for a new one). The folder is matched by its real path: through a symlink (`~/work-hub/Projects/x` = `~/Projects/x`) or another letter case it is the same workspace, never a new one; if duplicates already exist, the mounted one wins, then the live one, then the most recent. A workspace already mounted gets a NEW pane for the agent (as with "same-workspace"), the user\'s shell is left alone. A workspace not mounted is mounted, and its active pane is reused only if idle at a shell prompt (then `cd`ed into the root). The response reports `cwd`, `reusedPane` and `reusedWorkspace`. A second copy of an agent goes in that agent\'s workspace with a distinct bus slug (`export AB_SESSION_SLUG=<name>` in the command), not in a subfolder. Placement modes: "workspace" (default — full create+mount+add), "pane-split" (split active pane of current workspace), "same-workspace" (add a terminal to an already-mounted workspace). For non-TUI binaries (bash, scripts), pass the full command in `agentArgs` and use `execMode: "run"`; `onda_agent_prompt` is then unnecessary.',
+      'Boot an agent in a workspace+pane and return once the TUI is ready to accept a prompt. Does NOT submit a task — use `onda_agent_prompt` after spawn for that. Splitting bootstrap and prompt delivery makes the flow resilient: you can retry the prompt without re-paying the agent cold-start (5-10s for Claude), and you can intercept unexpected TUI states between the two steps.\n\n**Check `state`, not only `ready`.** With a `readyPattern`, the response says what the screen really is: "ready" (prompt box up), "trust_prompt" (Claude Code asks whether to trust the folder — happens the first time in a folder), "not_logged_in" ("Not logged in · Please run /login" or the login-method picker), "onboarding" (first-run setup of a fresh account/config dir), or "timeout". Those three screens also draw the `❯` a ready pattern looks for, so before this field they came back as ready. Only `state: "ready"` means `onda_agent_prompt` will land; the others come with `needsUserAction: true` and a `hint`. Output is judged from the moment the command is written, so a reused pane\'s old screens do not count. Use `trust: "accept"` to let the spawn answer the folder question itself.\n\n**Where the session starts.** placement="workspace" locates the workspace by `workspaceRootPath` (the folder is the identity; `workspaceName` is only a label for a new one). The folder is matched by its real path: through a symlink (`~/work-hub/Projects/x` = `~/Projects/x`) or another letter case it is the same workspace, never a new one; if duplicates already exist, the mounted one wins, then the live one, then the most recent. A workspace is born empty, so a pane is never assumed: no pane → one is created; a shell idle at its prompt → reused (`cd`ed into the root, `reusedPane: true`); **the same agent already running in that workspace → NO second session**: you get that terminal back with `reusedAgent: true` and `state` "ready" (waiting for a prompt) or "busy" — prompt it with onda_agent_prompt. `allowDuplicate: true` starts another one anyway; `addTerminalIfNeeded: true` forces a new pane instead of reusing an idle shell. The agent is recognised through an account wrapper too (agentBin "zsh", agentArgs ["-lc", "…exec claude…"]). **After a spawn timeout, do not spawn again blindly**: onda_terminal_list(workspaceId) first — a spawn that timed out often started anyway, and a retry now returns `reusedAgent` instead of a duplicate. The response reports `cwd`, `reusedPane`, `reusedAgent` and `reusedWorkspace`. A second copy of an agent goes in that agent\'s workspace with a distinct bus slug (`export AB_SESSION_SLUG=<name>` in the command), not in a subfolder. Placement modes: "workspace" (default — full create+mount+add), "pane-split" (split active pane of current workspace), "same-workspace" (add a terminal to an already-mounted workspace). For non-TUI binaries (bash, scripts), pass the full command in `agentArgs` and use `execMode: "run"`; `onda_agent_prompt` is then unnecessary.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -868,6 +878,14 @@ const TOOLS = [
         subscribe: {
           type: 'boolean',
           description: 'Attach a listener and return a `sessionId` ready for `onda_agent_wait`. Default true. Also lights up the presence badge in the pane header.',
+        },
+        allowDuplicate: {
+          type: 'boolean',
+          description: 'Default false: if the same agent (e.g. claude) already runs in the workspace, no second session is started and its terminal is returned with reusedAgent: true. true: start another session anyway.',
+        },
+        addTerminalIfNeeded: {
+          type: 'boolean',
+          description: 'placement=workspace: true forces a new pane even when an idle shell could be reused. Never overrides the no-duplicate rule (see allowDuplicate).',
         },
         snapshotDelay: {
           type: 'number',
@@ -1228,6 +1246,8 @@ const TOOL_MAP: Record<string, { method: string; mapParams?: (args: Record<strin
       trust: args.trust,
       unmountWhenEmpty: args.unmountWhenEmpty,
       worktree: args.worktree,
+      allowDuplicate: args.allowDuplicate,
+      addTerminalIfNeeded: args.addTerminalIfNeeded,
     }),
   },
   onda_agent_prompt: {
@@ -1297,14 +1317,14 @@ Layout model: Window ⊃ Workspace (root folder + panes, mounted as a tile in a 
 
 TO OPEN A WORKSPACE AND START AN AGENT SESSION (claude, codex, qwen, ...), ALWAYS use the agent_* flow:
   1. onda_agent_spawn(placement="workspace", workspaceRootPath=<path>, agentBin="claude", agentArgs=[flags only], readyPattern="❯|Welcome back|Try \\"")
-     → locates the workspace BY FOLDER (real path: symlinks and letter case count as the same folder; creates it only if none exists), mounts it (or, if already mounted, adds a new pane there), starts the session in that folder, blocks until the screen settles. Returns terminalId + sessionId + state + reusedWorkspace.
+     → locates the workspace BY FOLDER (real path: symlinks and letter case count as the same folder; creates it only if none exists), mounts it, picks the pane (none → creates one; idle shell → reuses it; the same agent already there → no second session, returns it with reusedAgent=true), starts the session in that folder, blocks until the screen settles. Returns terminalId + sessionId + state + reusedWorkspace.
      Read state before prompting: "ready" → go on. "trust_prompt" → first launch in that folder: ask the user, or spawn again with trust="accept" for a folder you created. "not_logged_in" / "onboarding" → the account needs /login or its first-run setup: tell the user, do not prompt. "timeout" → read the terminal. reusedPane/cwd say where the session started.
   2. onda_agent_prompt(terminalId, prompt) → writes the task into the TUI textbox and presses Enter. No shell involved: apostrophes, quotes and newlines are safe here.
   3. onda_agent_wait(sessionId, doneRegex, timeoutMs<=15000 in a loop) → wait for a sentinel.
   4. onda_agent_close(sessionId) → detach (soft); + killPty + terminalId → kill it, and the spawned pane goes with it. A workspace the spawn mounted leaves the mosaic once nothing alive is left in it (unmountWhenEmpty overrides). Leftover "[Process exited]" panes: onda_workspace_prune(workspaceId).
 Placement variants: "pane-split" (split the pane you are in), "same-workspace" (add a pane to an already-mounted workspaceId).
 Parallel agents on one repo: onda_agent_spawn(worktree={repoRoot, branch}) creates/reuses the branch's worktree next to the repo, trusts it and mounts it; one agent per worktree. onda_agent_close(killPty, terminalId, workspaceId, removeWorktree=true) removes it only if clean and merged into master/main/develop (else worktreeKept.reason), and archives the workspace. Dead workspaces (rootExists=false in onda_workspace_list): onda_workspace_remove.
-Before spawning, check onda_pane_list / onda_terminal_list for an existing live agent in that workspace and reuse it instead of creating duplicates.
+Live = an agent session or a non-shell process (live_reason agent|process in the list tools); a shell at its prompt is not live. Workspaces are born empty (no implicit terminal). A spawn never duplicates an agent already in the workspace; after a spawn TIMEOUT, onda_terminal_list(workspaceId) before anything else — never a blind second spawn. After spawning several agents, call onda_workspace_tile(anchorWorkspaceId=<your workspace>) once: grid, you top left, the others in order of opening.
 
 DO NOT: pass the task prompt as an argv element (agentArgs, terminal_spawn args, launch_session prompt) — a single apostrophe breaks zsh parsing and the prompt never reaches the agent. DO NOT use onda_launch_session (deprecated; same backend, worse ergonomics). DO NOT hand-assemble workspace_create → window_mount_workspace → workspace_add_terminal → terminal_spawn → send_keys unless agent_spawn returned an error you must work around.
 
