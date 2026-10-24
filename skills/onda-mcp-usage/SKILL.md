@@ -2,7 +2,7 @@
 name: onda-mcp-usage
 description: Best practices for driving Onda (terminal emulator) from Claude Code via the `onda` MCP server (`mcp__onda__*`). Covers workspaces/windows/panes/terminals + buffer reading (read/subscribe/poll/wait_for/send_keys) + spatial awareness (layout/screenshot). Use whenever you call any `mcp__onda__*` tool or the user mentions Onda, pane, workspace, terminal listener, presence badge, inception loop (Claude controlling Onda from inside Onda). Triggers — onda mcp, drive onda, control onda terminal, show pane, workspace layout, onda screenshot, kai watcher, terminal listener.
 metadata:
-  version: 0.7.3
+  version: 0.8.0
   source: '@mindfullabai/onda-mcp'
 ---
 
@@ -21,21 +21,34 @@ The text appears on screen, nothing runs, and the session *looks* started when i
 
 The distinction is **shell vs TUI**, not which tool feels handier. A shell executes on newline; a TUI textbox does not.
 
-### If `agent_spawn` times out, do NOT fall back to manual assembly
+### If `agent_spawn` times out: `terminal_list`, never a second spawn
 
-The MCP JSON-RPC client times out at ~60s, but **the backend usually completed anyway** — the workspace and pane are already there. The spawn is not lost.
+The MCP JSON-RPC client times out at ~60s, but **the backend usually completed anyway** — the workspace, the pane and often the agent itself are already there. The spawn is not lost. On 23 Oct 2026 a blind retry opened a fifth Kai next to four, with the same bus slug.
 
 ```
-1. terminal_list / workspace_list        → find what actually got created
-2. if no terminal in the pane:  workspace_add_terminal
-3. boot the agent:              send_keys(["claudea --dangerously-skip-permissions", "Enter"])
-4. wait:                        wait_for(readyPattern)
+1. terminal_list(workspaceId)            → find what actually got created (live_reason says "agent" if claude runs)
+2. agent there:                 agent_prompt(terminalId, prompt)   ← reuse it, no second spawn
+3. no agent, idle shell there:  agent_spawn again — it reuses the shell; with Onda ≥ ON18-F4 a spawn
+                                that finds the same agent returns reusedAgent: true instead of a duplicate
+4. wait:                        wait_for(readyPattern) / agent_wait
 5. THE PROMPT:                  agent_prompt(terminalId, prompt)   ← never terminal_send
 ```
 
 Dropping to `terminal_send` after a spawn timeout is exactly how the 21 Sep 2026 failure happened: workspace right, agent booted, prompt typed into the box — and never submitted. Cost: a silent stall plus a round of debugging, on a task that was otherwise complete.
 
 **Rule of thumb: if the target is a TUI, the prompt goes through `agent_prompt`. No exceptions.**
+
+---
+
+## The three mosaic rules (Mario, 24 Oct 2026 — ON18-F4)
+
+Same rules in the app, the CLI, the MCP and this skill.
+
+1. **Live = an agent or a process.** A workspace is live only when one of its terminals runs an agent session (claude, codex, qwen…) or a foreground program that is not the shell (build, dev server, script). A shell at its prompt is not live, and neither is a pane you are merely subscribed to. `onda_workspace_list`, `onda_pane_list`, `onda_terminal_list` (and `onda workspace list` / `onda list` / `onda pane list` in the CLI) report `live_reason: "agent" | "process" | "none"` plus `live_process` (the program). Detaching a workspace from the mosaic **closes its idle shells** (it leaves Background · live); with an agent or a process running nothing is touched and the row shows the program.
+2. **A workspace is born empty.** `workspace_create`, the app and the CLI open no terminal: the tile shows the welcome screen (recent sessions, "New session as …", "Open Terminal"). Whoever wants a terminal opens one: `agent_spawn` (creates the pane), or `workspace_add_terminal` for a plain shell. Never assume a pane exists.
+3. **Several agents → one grid.** After spawning more than one agent, call `onda_workspace_tile(anchorWorkspaceId=<your workspace, from onda_context>)` once: grid, you top left (work-hub, for Alita), the delegated agents in the other cells in order of opening, all visible. The user should never have to drag tiles around. `layout: "columns" | "rows"` or `order: [...]` only if asked for another arrangement. It never mounts or detaches anything.
+
+`agent_spawn` picks its pane by the same logic: none → creates one; an idle shell → reuses it; **the same agent already in the workspace → no second session**, you get that terminal back with `reusedAgent: true` (`state` "ready" or "busy"). `allowDuplicate: true` only when a second session in the same folder is really wanted (and then give it its own `AB_SESSION_SLUG`).
 
 ---
 
@@ -49,6 +62,8 @@ New in `@mindfullabai/onda-mcp@0.6.0` (needs an Onda build from 14 Oct 2026 or l
 - **`onda_workspace_list` / `onda_workspace_locate`** now return `archivedAt`, `rootExists`, `hostId` and `worktree`; `workspace_list` hides archived workspaces unless `includeArchived: true`.
 - `onda_workspace_prune` and `unmountWhenEmpty` on spawn/close (see "Empty workspaces").
 - Fix: a spawn into a workspace it just created/mounted reuses that workspace's fresh shell even while the shell is still loading its profile. Before, the shell read as "busy", a second pane was added, and the orphan shell kept the workspace alive after the agent was gone.
+
+New with Onda ON18-F4 (24 Oct 2026; skill 0.8.0): `live_reason` / `live_process` in the list tools, workspaces born empty, `agent_spawn` with `reusedAgent` / `allowDuplicate` / `addTerminalIfNeeded`, and `onda_workspace_tile` that actually arranges a grid (before it answered success and did nothing). An older host returns no `live_reason`, still opens a terminal on create, and ignores tile.
 
 Also in 0.6.0:
 - The server now ships MCP `instructions` (injected into the client system prompt): the agent_* flow is declared canonical there, `onda_launch_session` is marked deprecated in its own description. This skill is the long-form companion; the two must agree.
@@ -207,7 +222,7 @@ To drop a workspace from its window without destroying it:
 ```
 workspace_unmount(workspaceId=X)
 # registry slot freed, workspace still exists in global list
-# PTYs inside it stay alive (orphaned terminals) until kill or app restart
+# idle shells inside it are closed (ON18-F4); an agent or a running process keeps it live in the background
 ```
 
 ## Pattern: visual verification
@@ -233,13 +248,13 @@ When you need to delegate work to another Claude session (or any TUI agent) — 
 
 ### Check for an existing agent before spawning
 
-`agent_spawn` (and every lower-level path) creates a NEW pane even if the workspace already hosts a live agent. Before spawning: `onda_pane_list(workspaceId)` / `onda_terminal_list(workspaceId)` → if a claude session is already running there, `terminal_read` its tail to confirm it is at a prompt (not mid-task) and reuse it with `agent_prompt`. Spawn only when nothing suitable exists. Avoids orphan panes and duplicate sessions competing on the same repo.
+`onda_terminal_list(workspaceId)` → an entry with `live_reason: "agent"` and the agent you want means a session is already there: `terminal_read` its tail to see whether it sits at its prompt or is mid-task, and reuse it with `agent_prompt`. Since ON18-F4 `agent_spawn` does this check itself and returns `reusedAgent: true` rather than a duplicate (older hosts opened a NEW pane every time — check by hand there). Avoids orphan panes and duplicate sessions competing on the same repo.
 
 ### Reuse the workspace: one folder, one workspace (16 Oct 2026)
 
 **The priority is to reuse a workspace that exists, never to create a second one for the same folder.**
 
-1. **Look the workspace up by `rootPath` first**: `onda_workspace_locate(rootPath=<folder>)`. Onda matches by real path, so `~/work-hub/Projects/X` (symlink) and `~/Projects/X` are the same workspace, and so are `onda` and `Onda` on APFS. If it exists and `mountedIn` is set, spawn with `placement="same-workspace", workspaceId=<id>`. With `placement="workspace"` Onda now does the same by itself (the mounted workspace gets a NEW pane, `reusedWorkspace: true`), but locating first tells you what is already running there.
+1. **Look the workspace up by `rootPath` first**: `onda_workspace_locate(rootPath=<folder>)`. Onda matches by real path, so `~/work-hub/Projects/X` (symlink) and `~/Projects/X` are the same workspace, and so are `onda` and `Onda` on APFS. With `placement="workspace"` Onda reuses it by itself (`reusedWorkspace: true`), mounted or not: an idle shell in it is reused, the same agent is not started twice, otherwise a new pane is added. Locating first tells you what is already running there.
 2. **A second copy of an agent** (e.g. Kai B next to Kai) opens in **that agent's workspace**, with its own bus slug in the command: `agentArgs: ["-lc", "export AB_SESSION_SLUG=<name>; exec claude --model opus --dangerously-skip-permissions"]` (`agentBin: "zsh"`). **Never** in a subfolder created for the purpose: a subfolder is a different workspace, a different Claude project and a different bus identity.
 3. Older Onda builds compared the path as text and created duplicates. If `onda_workspace_list` shows two workspaces for one folder, do not create a third: use the mounted / live one. Cleaning duplicates up is the user's (or Alita's) call, not the spawning agent's.
 
@@ -365,8 +380,10 @@ Non-ready states come with `needsUserAction: true` and a `hint`. Note: newer Cla
 ### Where the session starts (placement="workspace")
 
 - The workspace is found **by folder** (`workspaceRootPath`); `workspaceName` is only the label of a newly created one. Two workspaces may share a name — passing a name never picks a different folder.
-- The workspace's active pane is reused only when it sits idle at a shell prompt; it is `cd`'d into the root before the agent starts. A busy pane is left alone and a fresh one is added.
-- The response says `cwd` (the root the session started in) and `reusedPane`.
+- No pane at all (a workspace is born empty) → a pane is created.
+- A pane idle at a shell prompt (the active one first) → reused, `cd`'d into the root before the agent starts. Busy panes are left alone.
+- The same agent already running there → nothing is started: `reusedAgent: true`, prompt that terminal.
+- The response says `cwd` (the root the session started in), `reusedPane` and `reusedAgent`.
 
 ### doneRegex pattern: match across renderers
 
@@ -635,7 +652,7 @@ Workspace:
 - `onda_workspace_focus` — switch in focused window
 - `onda_workspace_layout` — mosaic tree + paneIds + activePaneId + viewport
 - `onda_workspace_add_terminal` — spawn pane with optional direction
-- `onda_workspace_tile` — set layout (split-h, split-v, quad)
+- `onda_workspace_tile` — arrange the workspaces mounted in a window: grid (default, anchor top left, others in order of opening), columns, rows
 - `onda_workspace_setLayout` — set custom layout
 
 Pane:
