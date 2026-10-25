@@ -84,7 +84,7 @@ New in `@mindfullabai/onda-mcp@0.4.0`:
 Bug fixes shipped in `@mindfullabai/onda-mcp@0.3.1` + Onda 1.9.1+:
 - `terminal_read` now returns the full buffer even on first call (eager tap attach at PTY spawn). Pre-0.3.1 a fresh terminal returned an empty buffer until `subscribe` was active.
 - `workspace_add_terminal` now respects `direction='down'` (was silently rewritten to `'row'` whenever the anchor was already in a row split).
-- `window_mount_workspace` now actually splices the workspace into the tiled mosaic (pre-fix the registry was updated but the UI tab/tile never appeared). Accepts `direction` ('down'|'right', default 'down') and `anchorWorkspaceId` mirroring the Cmd+P picker.
+- `window_mount_workspace` now actually splices the workspace into the tiled mosaic (pre-fix the registry was updated but the UI tab/tile never appeared). Accepts `direction` ('down'|'right', default 'down') and `anchorWorkspaceId` mirroring the Cmd+P picker. It does not move the user's focus (blue border) unless `focus: true`: the master session keeps the keyboard.
 
 If you are talking to an older host (Onda < 1.9.1), fall back to the legacy patterns: subscribe before run, avoid direction='down' on add_terminal, click-mount via the user. The `agent_spawn` tool will respond with `{error: "Unknown method"}` if the host pre-dates 0.4.0 — fall back to `onda_launch_session` in that case.
 
