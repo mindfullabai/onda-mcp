@@ -617,7 +617,7 @@ const TOOLS = [
   {
     name: 'onda_window_mount_workspace',
     description:
-      'Mount a workspace in a specific window. Idempotent when the workspace is already there. If the workspace is currently mounted in another window, orchestrates an atomic transfer via the unmount-request flow (same path the in-app "Move workspace here?" dialog uses). Returns { success, workspaceId, windowId, transferred } only once the window itself shows the tile (it waits for a just-created window to be ready); if the tile does not appear the call fails with the reason and the mount is released, instead of reporting a mount that is not on screen. Pass `direction` to control how the new tile is spliced into the mosaic (mirrors the Cmd+P picker: Enter = down, Cmd+Enter = right).',
+      'Mount a workspace in a specific window. Idempotent when the workspace is already there. If the workspace is currently mounted in another window, orchestrates an atomic transfer via the unmount-request flow (same path the in-app "Move workspace here?" dialog uses). Returns { success, workspaceId, windowId, transferred } only once the window itself shows the tile (it waits for a just-created window to be ready); if the tile does not appear the call fails with the reason and the mount is released, instead of reporting a mount that is not on screen. Pass `direction` to control how the new tile is spliced into the mosaic (mirrors the Cmd+P picker: Enter = down, Cmd+Enter = right). The mount does NOT move the visible focus (the blue border) by default: the user keeps typing in the session they are in. Pass `focus: true` only when the user asked to be taken there.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -631,6 +631,10 @@ const TOOLS = [
         anchorWorkspaceId: {
           type: 'string',
           description: 'Optional. Workspace id to anchor the split next to. Default: currently active workspace in the target window.',
+        },
+        focus: {
+          type: 'boolean',
+          description: 'Optional. Give the mounted workspace the focus. Default: false (an agent\'s mount never steals the user\'s focus).',
         },
       },
       required: ['workspaceId', 'windowId'],
@@ -793,7 +797,7 @@ const TOOLS = [
         placement: {
           type: 'string',
           enum: ['workspace', 'background', 'pane-split', 'same-workspace'],
-          description: 'Where to host the new agent terminal. Default "workspace": create-or-locate workspace + mount + add terminal. "background": the same, but a workspace that was not on screen leaves the mosaic again as soon as its terminal runs — the session lives on unseen, listed as live in onda_workspace_list (mountedIn null) and under "Background · live" in the app, where a click mounts it; onda_agent_prompt / wait / close work as usual. Use it for trial sessions and for delegates nobody needs to watch. The result says `background: true`, or `background: false` + `backgroundNote` when the workspace was already on screen and stays there. Takes the placement=workspace fields (workspaceRootPath, worktree…). "pane-split": split the active pane of the focused workspace. "same-workspace": add a terminal pane to an existing mounted workspace (requires `workspaceId`).',
+          description: 'Where to host the new agent terminal. Default "workspace": create-or-locate workspace + mount + add terminal; the mount never moves the user\'s focus (the blue border stays where they are). "background": the same, but a workspace that was not on screen leaves the mosaic again as soon as its terminal runs — the session lives on unseen, listed as live in onda_workspace_list (mountedIn null) and under "Background · live" in the app, where a click mounts it; onda_agent_prompt / wait / close work as usual. Use it for trial sessions and for delegates nobody needs to watch. The result says `background: true`, or `background: false` + `backgroundNote` when the workspace was already on screen and stays there. Takes the placement=workspace fields (workspaceRootPath, worktree…). "pane-split": split the active pane of the focused workspace. "same-workspace": add a terminal pane to an existing mounted workspace (requires `workspaceId`).',
         },
         // --- placement=workspace ---
         workspaceRootPath: {
