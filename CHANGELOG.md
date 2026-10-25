@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.7.0 (unreleased)
+
+Needs an Onda build with ON24-F4 (branch `feat/on24-f4-layout`, 25 Oct 2026). An older host answers `invalid_layout` for "main" and runs "background" as a plain "workspace" spawn.
+
+### Features
+
+- **`onda_workspace_tile` `layout: "main"`** (+ `mainPercent`, default 62, 30-85): the anchor takes that share of the width for the whole height, the other mounted workspaces stack in a column on its right with equal heights, two narrow columns past 4 of them. The result adds `main: { percent, side, sideColumns }`. Same arrangement in the app (⇧⌘M, command palette) and the CLI (`onda workspace tile main --anchor <ws> --main <percent>`).
+- **`onda_agent_spawn` `placement: "background"`**: as "workspace", but a workspace that was not on screen leaves the mosaic once its terminal runs. The session lives on unseen, is listed as live (`mountedIn: null`) and mounts with a click under "Background · live". The result carries `background: true`, or `false` + `backgroundNote` when the workspace was already on screen.
+- Skill `onda-mcp-usage` 0.9.0: after each spawn, `workspace_tile(layout="main")` with the orchestrator as anchor; trial sessions always in the background.
+
 ## 0.6.0 (unreleased)
 
 Needs an Onda build from 14 Oct 2026 or later (`onda-electron` branch `feat/mcp-worktree`). Older hosts answer `Unknown method` for `workspace.remove` and ignore the new parameters.

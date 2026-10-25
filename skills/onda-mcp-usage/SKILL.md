@@ -2,7 +2,7 @@
 name: onda-mcp-usage
 description: Best practices for driving Onda (terminal emulator) from Claude Code via the `onda` MCP server (`mcp__onda__*`). Covers workspaces/windows/panes/terminals + buffer reading (read/subscribe/poll/wait_for/send_keys) + spatial awareness (layout/screenshot). Use whenever you call any `mcp__onda__*` tool or the user mentions Onda, pane, workspace, terminal listener, presence badge, inception loop (Claude controlling Onda from inside Onda). Triggers — onda mcp, drive onda, control onda terminal, show pane, workspace layout, onda screenshot, kai watcher, terminal listener.
 metadata:
-  version: 0.8.0
+  version: 0.9.0
   source: '@mindfullabai/onda-mcp'
 ---
 
@@ -40,13 +40,14 @@ Dropping to `terminal_send` after a spawn timeout is exactly how the 21 Sep 2026
 
 ---
 
-## The three mosaic rules (Mario, 24 Oct 2026 — ON18-F4)
+## The mosaic rules (24 Oct 2026 — ON18-F4; rules 3-4 ON24-F4, 25 Oct 2026)
 
 Same rules in the app, the CLI, the MCP and this skill.
 
 1. **Live = an agent or a process.** A workspace is live only when one of its terminals runs an agent session (claude, codex, qwen…) or a foreground program that is not the shell (build, dev server, script). A shell at its prompt is not live, and neither is a pane you are merely subscribed to. `onda_workspace_list`, `onda_pane_list`, `onda_terminal_list` (and `onda workspace list` / `onda list` / `onda pane list` in the CLI) report `live_reason: "agent" | "process" | "none"` plus `live_process` (the program). Detaching a workspace from the mosaic **closes its idle shells** (it leaves Background · live); with an agent or a process running nothing is touched and the row shows the program.
 2. **A workspace is born empty.** `workspace_create`, the app and the CLI open no terminal: the tile shows the welcome screen (recent sessions, "New session as …", "Open Terminal"). Whoever wants a terminal opens one: `agent_spawn` (creates the pane), or `workspace_add_terminal` for a plain shell. Never assume a pane exists.
-3. **Several agents → one grid.** After spawning more than one agent, call `onda_workspace_tile(anchorWorkspaceId=<your workspace, from onda_context>)` once: grid, you top left (work-hub, for Alita), the delegated agents in the other cells in order of opening, all visible. The user should never have to drag tiles around. `layout: "columns" | "rows"` or `order: [...]` only if asked for another arrangement. It never mounts or detaches anything.
+3. **The orchestrator keeps the space (ON24-F4).** The session that orchestrates is where the user reads and writes; the agents it starts work mostly for it, and stay visible but small. After **every** spawn that puts a workspace on screen, call `onda_workspace_tile(layout="main", anchorWorkspaceId=<your workspace, from onda_context>)`: your workspace large on the left (62% of the width by default, `mainPercent` to change it), the delegated agents stacked in a column on the right, two narrow columns past 4 of them. The user should never have to drag tiles around (⇧⌘M does the same from the keyboard, with the focused workspace as the main one). `layout: "grid" | "columns" | "rows"` or `order: [...]` only if asked for another arrangement. It never mounts or detaches anything.
+4. **Trial sessions run in the background.** A session you start only to try something (a smoke test of a CLI, a check of a fix, a throwaway agent) and a delegate nobody needs to watch go with `agent_spawn(placement="background")`: the session runs unseen, is listed as live (`onda_workspace_list`: `live_reason` set, `mountedIn: null`; in the app under "Background · live", where a click mounts it), and prompt / wait / close work as usual. Do not put it on screen just to close it a minute later.
 
 `agent_spawn` picks its pane by the same logic: none → creates one; an idle shell → reuses it; **the same agent already in the workspace → no second session**, you get that terminal back with `reusedAgent: true` (`state` "ready" or "busy"). `allowDuplicate: true` only when a second session in the same folder is really wanted (and then give it its own `AB_SESSION_SLUG`).
 
@@ -62,6 +63,8 @@ New in `@mindfullabai/onda-mcp@0.6.0` (needs an Onda build from 14 Oct 2026 or l
 - **`onda_workspace_list` / `onda_workspace_locate`** now return `archivedAt`, `rootExists`, `hostId` and `worktree`; `workspace_list` hides archived workspaces unless `includeArchived: true`.
 - `onda_workspace_prune` and `unmountWhenEmpty` on spawn/close (see "Empty workspaces").
 - Fix: a spawn into a workspace it just created/mounted reuses that workspace's fresh shell even while the shell is still loading its profile. Before, the shell read as "busy", a second pane was added, and the orphan shell kept the workspace alive after the agent was gone.
+
+New with Onda ON24-F4 (25 Oct 2026; skill 0.9.0): `onda_workspace_tile(layout="main", mainPercent?)` and `onda_agent_spawn(placement="background")`. An older host answers `invalid_layout` for "main" and treats "background" as a plain "workspace" spawn (the session stays on screen, and the result has no `background` field).
 
 New with Onda ON18-F4 (24 Oct 2026; skill 0.8.0): `live_reason` / `live_process` in the list tools, workspaces born empty, `agent_spawn` with `reusedAgent` / `allowDuplicate` / `addTerminalIfNeeded`, and `onda_workspace_tile` that actually arranges a grid (before it answered success and did nothing). An older host returns no `live_reason`, still opens a terminal on create, and ignores tile.
 
@@ -468,7 +471,8 @@ Concretely: the alternative (single `agent_spawn` call that also submits the pro
 
 | Mode | When to use |
 |------|-------------|
-| `workspace` (default) | Long isolated delegation. New tile alongside yours in the same window. Survives across delegations. |
+| `workspace` (default) | Long isolated delegation you (or the user) want to watch. New tile alongside yours in the same window; then `workspace_tile(layout="main")`. Survives across delegations. |
+| `background` | Trial sessions and delegates nobody needs to watch. Same as `workspace`, but the workspace leaves the mosaic as soon as the terminal runs: live, unseen, one click in "Background · live" mounts it. A workspace already on screen stays there (`background: false` + `backgroundNote`). |
 | `pane-split` | Quick parallel work in the SAME workspace you're already in. The agent's cwd is `splitCwd`. Nothing to clean up at the workspace level. |
 | `same-workspace` | The target workspace is already mounted (`workspaceId`). Just add another terminal pane to it — useful when several agents share one repo. |
 
@@ -652,7 +656,7 @@ Workspace:
 - `onda_workspace_focus` — switch in focused window
 - `onda_workspace_layout` — mosaic tree + paneIds + activePaneId + viewport
 - `onda_workspace_add_terminal` — spawn pane with optional direction
-- `onda_workspace_tile` — arrange the workspaces mounted in a window: grid (default, anchor top left, others in order of opening), columns, rows
+- `onda_workspace_tile` — arrange the workspaces mounted in a window: main (anchor large on the left, the others in a column), grid (default, anchor top left, others in order of opening), columns, rows
 - `onda_workspace_setLayout` — set custom layout
 
 Pane:
