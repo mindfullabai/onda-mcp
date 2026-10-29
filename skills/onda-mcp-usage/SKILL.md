@@ -61,6 +61,7 @@ New in `@mindfullabai/onda-mcp@0.6.0` (needs an Onda build from 14 Oct 2026 or l
 - **Worktrees as disposable workspaces**: `onda_agent_spawn(worktree={repoRoot, branch, from?})` creates or reuses the branch's git worktree next to the repo, trusts it for Claude Code and mounts it. `onda_agent_close(removeWorktree=true)` removes it only when clean and merged. See "Worktrees and disposable workspaces" below.
 - **`onda_workspace_remove`**: archive (default) or delete a workspace nobody is using.
 - **`onda_workspace_list` / `onda_workspace_locate`** now return `archivedAt`, `rootExists`, `hostId` and `worktree`; `workspace_list` hides archived workspaces unless `includeArchived: true`.
+- **`onda_workspace_list` is big with many workspaces** (100+ KB): narrow it with `live`, `dead` (folder gone), `archived`, `worktree` and ask for `compact: true` (`{ id, name, rootPath, state, mountedIn }`, state one of archived / dead / live / idle). `archivedReason` tells who archived one (manual / agent / worktree-retired).
 - `onda_workspace_prune` and `unmountWhenEmpty` on spawn/close (see "Empty workspaces").
 - Fix: a spawn into a workspace it just created/mounted reuses that workspace's fresh shell even while the shell is still loading its profile. Before, the shell read as "busy", a second pane was added, and the orphan shell kept the workspace alive after the agent was gone.
 
