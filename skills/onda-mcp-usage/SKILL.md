@@ -350,18 +350,29 @@ spawn = agent_spawn(placement="workspace", agentBin="claude", agentArgs=["--dang
 agent_prompt(spawn.terminalId, "...")
 # ... agent works and commits; you (or the user) merge the branch into master/main/develop ...
 
-# Close: kill, unmount once empty, then — only if the worktree is clean AND its HEAD is already in
-# master/main/develop — `git worktree remove` + `git worktree prune`, and the workspace is archived.
+# Close: kill, unmount once empty, then the onda_worktree_retire checks (nothing running inside, clean,
+# work already in origin's master/main/develop by merge, squash or merged PR): `git worktree remove`
+# + prune, and the workspace is archived. The branch stays, no tag.
 agent_close(sessionId=spawn.sessionId, terminalId=spawn.terminalId, killPty=True,
             workspaceId=spawn.workspaceId, removeWorktree=True)
-# → {worktreeRemoved: {path, branch, mergedInto}, workspaceArchived: True, ...}
-# → or {worktreeKept: {reason: "not_merged" | "dirty" | "mounted" | "live_panes" | ...}}: nothing touched.
+# → {worktreeRemoved: {path, branch, mergedInto, integratedBy}, workspaceArchived: True, ...}
+# → or {worktreeKept: {reason: "not_integrated" | "dirty" | "in_use" | "no_remote" | ..., detail}}: nothing touched.
+
+# Retire for good, branch included: archive tag on HEAD pushed to origin, worktree removed,
+# local branch deleted, remote branch deleted with a merged PR or a normal merge (kept after a squash).
+worktree_retire(workspaceId=spawn.workspaceId, dryRun=True)   # every check, nothing changed
+worktree_retire(workspaceId=spawn.workspaceId)                # archiveTagPrefix= default "archive/"
+# → {retired: True, integratedBy: "ancestor"|"tree"|"pr", tag: "archive/feat/login", branchDeleted, remoteBranchDeleted, checks}
+# → or {retired: False, reason, detail, checks}: report it to the owner of the work, do not force it.
 ```
 
-- The branch is **never** deleted, merged or not.
+- In doubt it keeps: no `origin`, origin unreachable, `gh` missing and a branch that is neither an ancestor nor a no-op merge of origin's base → kept with the reason.
 - Not merged yet? The worktree and the (unmounted) workspace stay. Spawn again with the same `worktree` to resume: the existing worktree is reused and the workspace remounted (restored if archived).
+- `worktree_list(repoRoot)` shows every linked worktree with `clean`, `integratedInto`, `live`, `workspaceId` and spawn `labels`: what can go.
+- `agent_spawn(..., labels={"task": "T-12", "owner": "..."})` stores opaque pairs on the workspace; they come back in spawn, `workspace_list`, `workspace_locate` and `worktree_list`, also after a restart.
+- With a cap set (`agents.maxWorktreesPerRepo`, default 0 = none), a spawn that would open one worktree too many fails with `errorCode: "worktree_cap"` and the list: retire some first.
 - `worktree` needs `placement="workspace"`; it replaces `workspaceRootPath`. Errors come back as `errorCode: "worktree_failed"` (branch checked out in the main tree, path taken by another folder, not a repo).
-- `workspace_list` / `workspace_locate` show `worktree: {repoRoot, branch, isMain, clean, mergedInto}` for any workspace whose folder is a worktree root (null otherwise, and for remote workspaces).
+- `workspace_list` / `workspace_locate` show `worktree: {repoRoot, branch, isMain, clean, mergedInto, integratedInto}` for any workspace whose folder is a worktree root (null otherwise, and for remote workspaces).
 
 **Cleaning up dead workspaces.** `workspace_list()` → entries with `rootExists: false` (folder gone) and `mountedIn: null` → `workspace_remove(workspaceId)` archives them (reversible from the app; `permanent=True` deletes them from Onda, never the folder). It refuses a mounted workspace (`errorCode: "mounted"`: `workspace_unmount` first) and one with live terminals or unsaved editors (`errorCode: "live_panes"`, with the list). On the Free plan the workspace cap counts **active** workspaces only: archiving frees a slot. Restoring checks the cap again, so `agent_spawn` on the folder of an archived workspace fails with `workspace_limit_reached` when the active ones are at the cap (a worktree that spawn had just created is removed again, `worktree.removedAgain: true`): archive another one first.
 
