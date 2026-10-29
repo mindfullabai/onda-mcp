@@ -51,6 +51,18 @@ interface JsonRpcResponse {
   id: string | number | null;
 }
 
+/**
+ * How long a call may stay silent before it is given up. Most methods answer at
+ * once; the ones that wait on git over the network or on an agent get longer,
+ * otherwise the caller sees "Connection timeout" for a call that went through.
+ */
+function idleTimeoutFor(method: string, params?: Record<string, unknown>): number {
+  if (method === 'worktree.retire') return 180_000;
+  if (method === 'worktree.list') return 60_000;
+  const waited = Number(params?.timeoutMs ?? params?.readyTimeoutMs ?? 0);
+  return Number.isFinite(waited) && waited > 0 ? Math.max(5_000, waited + 10_000) : 5_000;
+}
+
 async function callOnda(method: string, params?: Record<string, unknown>): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const socket = new Socket();
@@ -115,7 +127,7 @@ async function callOnda(method: string, params?: Record<string, unknown>): Promi
     });
 
     socket.connect(getSocketPath());
-    socket.setTimeout(5000);
+    socket.setTimeout(idleTimeoutFor(method, params));
   });
 }
 
