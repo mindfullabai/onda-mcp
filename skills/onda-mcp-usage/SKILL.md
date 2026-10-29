@@ -2,7 +2,7 @@
 name: onda-mcp-usage
 description: Best practices for driving Onda (terminal emulator) from Claude Code via the `onda` MCP server (`mcp__onda__*`). Covers workspaces/windows/panes/terminals + buffer reading (read/subscribe/poll/wait_for/send_keys) + spatial awareness (layout/screenshot). Use whenever you call any `mcp__onda__*` tool or the user mentions Onda, pane, workspace, terminal listener, presence badge, inception loop (Claude controlling Onda from inside Onda). Triggers — onda mcp, drive onda, control onda terminal, show pane, workspace layout, onda screenshot, kai watcher, terminal listener.
 metadata:
-  version: 0.9.0
+  version: 0.10.0
   source: '@mindfullabai/onda-mcp'
 ---
 
@@ -59,7 +59,8 @@ This skill tells you **how to correctly use the `mcp__onda__*` tools** exposed b
 
 New in `@mindfullabai/onda-mcp@0.6.0` (needs an Onda build from 14 Oct 2026 or later, branch `feat/mcp-worktree`; an older host answers `Unknown method` for `workspace.remove` and ignores `worktree` / `removeWorktree`):
 - **Worktrees as disposable workspaces**: `onda_agent_spawn(worktree={repoRoot, branch, from?})` creates or reuses the branch's git worktree next to the repo, trusts it for Claude Code and mounts it. `onda_agent_close(removeWorktree=true)` removes it only when clean and merged. See "Worktrees and disposable workspaces" below.
-- **`onda_workspace_remove`**: archive (default) or delete a workspace nobody is using.
+- **`onda_workspace_remove`**: archive or delete a workspace nobody is using (`mode`; default delete when its folder is gone, archive otherwise).
+- **`onda_workspace_remove_dead`**: delete every workspace whose folder is gone, in one go (`dryRun` lists them).
 - **`onda_workspace_list` / `onda_workspace_locate`** now return `archivedAt`, `rootExists`, `hostId` and `worktree`; `workspace_list` hides archived workspaces unless `includeArchived: true`.
 - `onda_workspace_prune` and `unmountWhenEmpty` on spawn/close (see "Empty workspaces").
 - Fix: a spawn into a workspace it just created/mounted reuses that workspace's fresh shell even while the shell is still loading its profile. Before, the shell read as "busy", a second pane was added, and the orphan shell kept the workspace alive after the agent was gone.
@@ -374,7 +375,7 @@ worktree_retire(workspaceId=spawn.workspaceId)                # archiveTagPrefix
 - `worktree` needs `placement="workspace"`; it replaces `workspaceRootPath`. Errors come back as `errorCode: "worktree_failed"` (branch checked out in the main tree, path taken by another folder, not a repo).
 - `workspace_list` / `workspace_locate` show `worktree: {repoRoot, branch, isMain, clean, mergedInto, integratedInto}` for any workspace whose folder is a worktree root (null otherwise, and for remote workspaces).
 
-**Cleaning up dead workspaces.** `workspace_list()` → entries with `rootExists: false` (folder gone) and `mountedIn: null` → `workspace_remove(workspaceId)` archives them (reversible from the app; `permanent=True` deletes them from Onda, never the folder). It refuses a mounted workspace (`errorCode: "mounted"`: `workspace_unmount` first) and one with live terminals or unsaved editors (`errorCode: "live_panes"`, with the list). On the Free plan the workspace cap counts **active** workspaces only: archiving frees a slot. Restoring checks the cap again, so `agent_spawn` on the folder of an archived workspace fails with `workspace_limit_reached` when the active ones are at the cap (a worktree that spawn had just created is removed again, `worktree.removedAgain: true`): archive another one first.
+**Cleaning up dead workspaces.** `workspace_list()` → entries with `rootExists: false` (folder gone) and `mountedIn: null` → `workspace_remove(workspaceId)` deletes them (default when the folder is gone: an archive would have nothing to restore; `mode="archive"` there is refused with `nothing_to_archive`; the folder on disk is never touched). `workspace_remove_dead(dryRun=True)` lists all of them, then `workspace_remove_dead()` deletes them in one go, skipping the ones in use with the reason. It refuses a mounted workspace (`errorCode: "mounted"`: `workspace_unmount` first) and one with live terminals or unsaved editors (`errorCode: "live_panes"`, with the list). On the Free plan the workspace cap counts **active** workspaces whose folder exists: deleting or archiving one frees a slot, and a workspace whose folder is gone holds none. Restoring checks the cap again, so `agent_spawn` on the folder of an archived workspace fails with `workspace_limit_reached` when the active ones are at the cap (a worktree that spawn had just created is removed again, `worktree.removedAgain: true`): delete or archive another one first.
 
 ### Boot states: what `state` means
 

@@ -6,7 +6,10 @@ Needs an Onda build with DC29-F3 (`onda-electron` branch `feat/dc29-retire`). An
 
 ### Features
 
-- **`onda_worktree_retire`**: retires an agent's worktree behind closed-door checks (nothing in use, clean, origin reachable, work in origin's base by merge, squash or merged PR, pushed when only a PR vouches), archive tag pushed, `git worktree remove` without force, branch deleted, workspace archived. `reason` + `checks` when kept; `dryRun` changes nothing.
+- **`onda_workspace_remove` `mode: "archive" | "delete"`** (DC29-F7.1): the archive is for folders that still exist. Without `mode`, a workspace whose folder is gone is deleted and one whose folder exists is archived; archiving a missing folder is refused (`nothing_to_archive`). `permanent` stays as an alias. Needs an Onda build with DC29-F7 (`feat/dc29-f7-lifecycle`).
+- **`onda_workspace_remove_dead`** (DC29-F7.1): deletes every local workspace whose folder is gone, archived ones included, skipping those in use with the reason; `dryRun` lists them.
+- **`onda_agent_close`** (DC29-F7.7): an agent spawned with `worktree` is killed and its worktree retired by default (`closedViaRetire: true`); a kept worktree reports the reason and its workspace is archived. `removeWorktree: false` only stops watching. The workspace of a retired worktree is deleted (`workspaceDeleted`), here and in `onda_worktree_retire`.
+- **`onda_worktree_retire`**: retires an agent's worktree behind closed-door checks (nothing in use, clean, origin reachable, work in origin's base by merge, squash or merged PR, pushed when only a PR vouches), archive tag pushed, `git worktree remove` without force, branch deleted, workspace deleted (folder gone). `reason` + `checks` when kept; `dryRun` changes nothing.
 - **`onda_worktree_list`**: a repo's linked worktrees with `clean`, `integratedInto`, `live`, `workspaceId`, `labels`, `archived`.
 - **`onda_agent_spawn` `labels`**: opaque pairs stored on the workspace, returned by spawn, workspace list/locate and worktree list. Spawns over the per-repo cap fail with `worktree_cap`.
 - **`onda_agent_close` `removeWorktree`** now runs the retire checks (squash merges recognised, origin's base instead of the local one), branch kept.
