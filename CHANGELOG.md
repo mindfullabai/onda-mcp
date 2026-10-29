@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.8.0 (unreleased)
+
+Needs an Onda build with DC29-F3 (`onda-electron` branch `feat/dc29-retire`). An older host answers `Unknown method` for `worktree.retire` / `worktree.list` and ignores `labels`.
+
+### Features
+
+- **`onda_worktree_retire`**: retires an agent's worktree behind closed-door checks (nothing in use, clean, origin reachable, work in origin's base by merge, squash or merged PR, pushed when only a PR vouches), archive tag pushed, `git worktree remove` without force, branch deleted, workspace archived. `reason` + `checks` when kept; `dryRun` changes nothing.
+- **`onda_worktree_list`**: a repo's linked worktrees with `clean`, `integratedInto`, `live`, `workspaceId`, `labels`, `archived`.
+- **`onda_agent_spawn` `labels`**: opaque pairs stored on the workspace, returned by spawn, workspace list/locate and worktree list. Spawns over the per-repo cap fail with `worktree_cap`.
+- **`onda_agent_close` `removeWorktree`** now runs the retire checks (squash merges recognised, origin's base instead of the local one), branch kept.
+
 ## 0.7.0 (unreleased)
 
 Needs an Onda build with ON24-F4 (branch `feat/on24-f4-layout`, 25 Oct 2026). An older host answers `invalid_layout` for "main" and runs "background" as a plain "workspace" spawn.
