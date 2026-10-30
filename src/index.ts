@@ -59,6 +59,7 @@ interface JsonRpcResponse {
 function idleTimeoutFor(method: string, params?: Record<string, unknown>): number {
   if (method === 'worktree.retire') return 180_000;
   if (method === 'worktree.list') return 60_000;
+  if (method === 'worktree.create') return 120_000;
   const waited = Number(params?.timeoutMs ?? params?.readyTimeoutMs ?? 0);
   return Number.isFinite(waited) && waited > 0 ? Math.max(5_000, waited + 10_000) : 5_000;
 }
@@ -498,7 +499,7 @@ const TOOLS = [
   {
     name: 'onda_workspace_list',
     description:
-      'List workspaces (archived ones only with includeArchived or archived:true). Each entry: { id, name, rootPath, paneCount, hostId, archivedAt, archivedReason, mountedIn, rootExists, worktree, live_reason, live_process, live_processes }. A workspace is live only when one of its terminals runs an agent (`live_reason: "agent"`) or a non-shell process (`"process"`); idle shells do not count (`"none"`). `live_process` is the strongest program, `live_processes` all of them, agents first. `mountedIn` is the windowId hosting that workspace, or null if not currently mounted. `archivedAt` is a timestamp or null; `archivedReason` says who archived it ("manual", "agent", "worktree-retired") or is null for older ones. `rootExists` is false when the folder is gone (a dead workspace: a removed worktree, a deleted checkout) and null for remote workspaces. `worktree` (null unless the folder is the root of a git worktree): { repoRoot, branch, isMain, clean, mergedInto } — isMain true for the repo\'s main tree; clean = no staged/unstaged/untracked changes; mergedInto = the first of master/main/develop that already contains HEAD (null if none, always null for the main tree). With many workspaces the full list is huge (100+ KB): narrow it with `live`, `dead`, `archived`, `worktree` (filters are ANDed) and/or pass `compact: true` for one short entry each: { id, name, rootPath, state, mountedIn } where state is one word: "archived", "dead" (folder gone), "live" or "idle". No parameters = the full list, as before. Use this with onda_window_list to map workspaces ↔ windows, and with onda_workspace_remove to clean up (e.g. `dead: true, compact: true` lists what to remove).',
+      'List workspaces (archived ones only with includeArchived or archived:true). Each entry: { id, name, rootPath, paneCount, hostId, archivedAt, archivedReason, mountedIn, rootExists, repoRoot, worktrees, worktree, live_reason, live_process, live_processes }. A workspace is live only when one of its terminals runs an agent (`live_reason: "agent"`) or a non-shell process (`"process"`); idle shells do not count (`"none"`). `live_process` is the strongest program, `live_processes` all of them, agents first. `mountedIn` is the windowId hosting that workspace, or null if not currently mounted. `archivedAt` is a timestamp or null; `archivedReason` says who archived it ("manual", "agent") or is null for older ones; a retired worktree no longer archives anything, since a worktree is a child of its repo\'s workspace, not a workspace. `rootExists` is false when the folder is gone (a dead workspace: a deleted checkout) and null for remote workspaces. `repoRoot` is the main tree of the git repo the workspace is for (null for non-git and umbrella folders), and `worktrees` is { count, active: { path, branch } | null, live } — the repo\'s worktrees are children of this one workspace, `active` is the one the workspace looks at, `live` how many of them have something running (see onda_worktree_list for the rows). `worktree` (null unless the folder is the root of a git worktree, i.e. the main tree): { repoRoot, branch, isMain, clean, mergedInto } — clean = no staged/unstaged/untracked changes; mergedInto = the first of master/main/develop that already contains HEAD (null if none, always null for the main tree). With many workspaces the full list is huge (100+ KB): narrow it with `live`, `dead`, `archived`, `worktree` (filters are ANDed) and/or pass `compact: true` for one short entry each: { id, name, rootPath, state, mountedIn } where state is one word: "archived", "dead" (folder gone), "live" or "idle". No parameters = the full list, as before. Use this with onda_window_list to map workspaces ↔ windows, and with onda_workspace_remove to clean up (e.g. `dead: true, compact: true` lists what to remove).',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -506,7 +507,7 @@ const TOOLS = [
         live: { type: 'boolean', description: 'true: only workspaces where an agent or a program is running; false: only those where nothing is.' },
         dead: { type: 'boolean', description: 'true: only workspaces whose folder is gone (rootExists false); false: only those whose folder exists or is remote.' },
         archived: { type: 'boolean', description: 'true: only archived workspaces (no need for includeArchived); false: only active ones.' },
-        worktree: { type: 'boolean', description: 'true: only workspaces whose folder is a git worktree root; false: only the others.' },
+        worktree: { type: 'boolean', description: 'true: only workspaces of a repo that has linked worktrees; false: only the others.' },
         compact: { type: 'boolean', description: 'Default false. true: each entry is { id, name, rootPath, state, mountedIn } only (state: "archived" | "dead" | "live" | "idle").' },
       },
     },
@@ -514,7 +515,7 @@ const TOOLS = [
   {
     name: 'onda_workspace_create',
     description:
-      'Create a new workspace. It is born EMPTY: no terminal is opened, its tile shows the welcome screen (recent sessions, new session, open terminal). To run an agent there use onda_agent_spawn (which creates the pane); for a plain shell, onda_workspace_add_terminal. Workspaces group panes by project folder. If a local workspace already has that folder (same real path, symlinks and letter case included) it is returned instead (`existing: true`, `workspaceId`), never duplicated. Pass hostId to create it on a remote host: rootPath is then a path ON THAT HOST, and every pane in the workspace runs there. The host must already be configured in Onda (Settings > Remotes) — use onda_remote_list to see which.',
+      'Create a new workspace. It is born EMPTY: no terminal is opened, its tile shows the welcome screen (recent sessions, new session, open terminal). To run an agent there use onda_agent_spawn (which creates the pane); for a plain shell, onda_workspace_add_terminal. Workspaces group panes by project folder. A folder that is a linked worktree of a repo opens (or returns, `existing: true`) the workspace of that repo, with `worktree: { path, branch, matched: true }`: worktrees are children of the repo\'s workspace, never workspaces of their own. If a local workspace already has that folder (same real path, symlinks and letter case included) it is returned instead (`existing: true`, `workspaceId`), never duplicated. Pass hostId to create it on a remote host: rootPath is then a path ON THAT HOST, and every pane in the workspace runs there. The host must already be configured in Onda (Settings > Remotes) — use onda_remote_list to see which.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -531,11 +532,12 @@ const TOOLS = [
   },
   {
     name: 'onda_workspace_focus',
-    description: 'Switch to a workspace by ID.',
+    description: 'Switch to a workspace by ID. With `worktreePath` it also activates that worktree of the repo (same as onda_worktree_activate).',
     inputSchema: {
       type: 'object' as const,
       properties: {
         id: { type: 'string', description: 'Workspace ID to switch to.' },
+        worktreePath: { type: 'string', description: 'Optional. A worktree of the repo to make active in that workspace.' },
       },
       required: ['id'],
     },
@@ -596,7 +598,7 @@ const TOOLS = [
   {
     name: 'onda_workspace_locate',
     description:
-      'Find a workspace by name, id, or rootPath without listing them all (archived ones included). rootPath is matched by real path: a symlinked spelling or a different letter case finds the same workspace; with duplicates, the mounted / live / most recent one is returned. Returns { workspace: { id, name, rootPath, hostId, archivedAt, mountedIn, rootExists, worktree } } or { workspace: null }. mountedIn is the windowId currently hosting the workspace, or null if not mounted. `worktree` (null unless the folder is the root of a git worktree): { repoRoot, branch, isMain, clean, mergedInto } — isMain true for the repo\'s main tree; clean = no staged/unstaged/untracked changes; mergedInto = the first of master/main/develop that already contains HEAD (null if none, always null for the main tree).',
+      'Find a workspace by name, id, or rootPath without listing them all (archived ones included). rootPath is matched by real path: a symlinked spelling or a different letter case finds the same workspace; with duplicates, the mounted / live / most recent one is returned. Returns { workspace: { id, name, rootPath, hostId, archivedAt, mountedIn, rootExists, repoRoot, worktrees, worktree } } or { workspace: null }. `rootPath` may be the folder of a linked worktree: it finds the workspace of its repo and adds `worktree: { path, branch, matched: true }` to the answer. mountedIn is the windowId currently hosting the workspace, or null if not mounted. `repoRoot` and `worktrees` ({ count, active, live }) are as in onda_workspace_list. `worktree` (null unless the folder is the root of a git worktree): { repoRoot, branch, isMain, clean, mergedInto } as in onda_workspace_list.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -639,6 +641,7 @@ const TOOLS = [
       type: 'object' as const,
       properties: {
         workspaceId: { type: 'string', description: 'Workspace to mount.' },
+        worktreePath: { type: 'string', description: 'Optional. A worktree of the repo to make active once mounted.' },
         windowId: { type: 'string', description: 'Destination window id.' },
         direction: {
           type: 'string',
@@ -686,7 +689,7 @@ const TOOLS = [
   {
     name: 'onda_workspace_remove_dead',
     description:
-      'Delete, in one go, every local workspace whose folder no longer exists (rootExists false in onda_workspace_list: retired worktrees, deleted checkouts), archived ones included. A workspace still in use (mounted, live terminal, unsaved editor) is skipped with the reason; remote workspaces are never touched; folders on disk are never touched. Run it first with `dryRun: true` to see the list. Returns { success, dryRun, removed: [{ workspaceId, name, rootPath, archived }], skipped: [{ workspaceId, name, rootPath, archived, reason }] }.',
+      'Delete, in one go, every local workspace whose folder no longer exists (rootExists false in onda_workspace_list: deleted checkouts), archived ones included. A workspace still in use (mounted, live terminal, unsaved editor) is skipped with the reason; remote workspaces are never touched; folders on disk are never touched. Run it first with `dryRun: true` to see the list. Returns { success, dryRun, removed: [{ workspaceId, name, rootPath, archived }], skipped: [{ workspaceId, name, rootPath, archived, reason }] }.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -709,14 +712,27 @@ const TOOLS = [
   },
 
   {
-    name: 'onda_worktree_retire',
+    name: 'onda_workspace_tidy',
     description:
-      'End of life of an agent\'s git worktree, behind closed-door checks run in this order; the first that fails stops everything, changes nothing and is the `reason`: (1) a linked worktree, not the main tree ("not_a_worktree", "main_worktree"); (2) nothing in use: no live terminal or unsaved editor in its Onda workspace and no process anywhere with its cwd inside, e.g. a dev server or an agent started outside Onda ("in_use"; a workspace still mounted but with nothing alive is unmounted first); (3) no changes and no untracked files, ignored files do not count ("dirty", with the first 20 files); (4) an `origin` remote, reachable; the base is its first master/main/develop, fetched ("no_remote", "fetch_failed"); (5) the work is already in origin/<base>: ancestor (normal merge), else merging it changes nothing (squash merge, even after the base moved on), else a merged PR on exactly this HEAD via `gh` if installed and logged in ("not_integrated"; when in doubt the worktree stays); (6) integrated only through a PR: origin/<branch> must equal HEAD ("not_pushed"); (7) archive tag `<archiveTagPrefix><branch>` on HEAD pushed to origin, `-2`, `-3`… when the name is taken by another commit, never moved ("tag_push_failed"). Then `git worktree remove` (never --force) + prune; local branch deleted; remote branch deleted only with a merged PR or a normal merge (with squash it stays: a PR may still be open); the workspace is deleted (its folder is gone, nothing to restore). Returns { retired, path, repoRoot, branch, base, reason?, detail?, integratedBy: "ancestor"|"tree"|"pr", tag, branchDeleted, remoteBranchDeleted, branchKept?, workspaceId, workspaceDeleted, workspaceArchived (always false, kept for older callers), checks: [{ name, ok, detail }] }. `dryRun: true` runs every check and changes nothing (`wouldRetire: true` when it would go). Call it once the work is merged; on `retired: false`, report `reason`/`detail` to whoever owns the work instead of retrying.',
+      'Reorder the panes of a mounted workspace by worktree: panes of the same worktree end up next to each other (main tree first, then the active worktree, then the others). Nothing is closed or moved to another workspace, and a spawn never does this by itself, so the user\'s own arrangement is only touched when you call it. Returns { success, workspaceId, by, order }.',
     inputSchema: {
       type: 'object' as const,
       properties: {
-        workspaceId: { type: 'string', description: 'Workspace of the worktree (from onda_agent_spawn). Preferred: its terminals are checked too.' },
-        path: { type: 'string', description: 'Worktree folder, when there is no workspace id at hand.' },
+        workspaceId: { type: 'string', description: 'Workspace to tidy (must be mounted).' },
+        by: { type: 'string', enum: ['worktree'], description: 'Grouping rule. Only "worktree" for now.' },
+      },
+      required: ['workspaceId', 'by'],
+    },
+  },
+  {
+    name: 'onda_worktree_retire',
+    description:
+      'End of life of an agent\'s git worktree, behind closed-door checks run in this order; the first that fails stops everything, changes nothing and is the `reason`: (1) a linked worktree, not the main tree ("not_a_worktree", "main_worktree"); (2) nothing in use: no live terminal or unsaved editor among the panes of that worktree and no process anywhere with its cwd inside, e.g. a dev server or an agent started outside Onda ("in_use"); (3) no changes and no untracked files, ignored files do not count ("dirty", with the first 20 files); (4) an `origin` remote, reachable; the base is its first master/main/develop, fetched ("no_remote", "fetch_failed"); (5) the work is already in origin/<base>: ancestor (normal merge), else merging it changes nothing (squash merge, even after the base moved on), else a merged PR on exactly this HEAD via `gh` if installed and logged in ("not_integrated"; when in doubt the worktree stays); (6) integrated only through a PR: origin/<branch> must equal HEAD ("not_pushed"); (7) archive tag `<archiveTagPrefix><branch>` on HEAD pushed to origin, `-2`, `-3`… when the name is taken by another commit, never moved ("tag_push_failed"). Then `git worktree remove` (never --force) + prune; local branch deleted; remote branch deleted only with a merged PR or a normal merge (with squash it stays: a PR may still be open); the panes of that worktree are closed and the repo\'s workspace stays, whatever happens (it is never deleted or archived, and if the retired worktree was the active one the main tree becomes active). Returns { retired, path, repoRoot, branch, base, reason?, detail?, integratedBy: "ancestor"|"tree"|"pr", tag, branchDeleted, remoteBranchDeleted, branchKept?, workspaceId (the repo\'s workspace), panesClosed (ids of the panes closed with the worktree), workspaceDeleted and workspaceArchived (deprecated: always false, kept one release for older callers), checks: [{ name, ok, detail }] }. `dryRun: true` runs every check and changes nothing (`wouldRetire: true` when it would go). Call it once the work is merged; on `retired: false`, report `reason`/`detail` to whoever owns the work instead of retrying.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        workspaceId: { type: 'string', description: 'The repo\'s workspace (from onda_agent_spawn). With `path` it names the worktree to retire; without `path` it is only used to find the repo.' },
+        path: { type: 'string', description: 'Worktree folder to retire (a linked worktree, never the main tree).' },
         archiveTagPrefix: { type: 'string', description: 'Prefix of the archive tag. Default "archive/".' },
         deleteBranch: { type: 'boolean', description: 'Default true. false: remove the worktree only; branch (local and remote) kept, no tag.' },
         dryRun: { type: 'boolean', description: 'Default false. true: run every check, change nothing.' },
@@ -726,7 +742,7 @@ const TOOLS = [
   {
     name: 'onda_worktree_list',
     description:
-      'The linked worktrees of a repo (main tree excluded), to see which ones can be retired: { repoRoot, worktrees: [{ path, branch, clean, integratedInto: { base, by: "ancestor"|"tree" } | null, live, liveReason?: "pty"|"process", workspaceId?, labels?, archived? }] }. `integratedInto` is checked against origin/<base> as last fetched (no network unless `fetch: true`); merged PRs are not asked here (onda_worktree_retire does). `live`: a terminal in its Onda workspace or any process with its cwd inside.',
+      'The worktrees of a repo, to see which ones can be retired and what runs in each: { repoRoot, workspaceId?, worktrees: [{ path, branch, isMain, isActive, exists, clean, integratedInto: { base, by: "ancestor"|"tree" } | null, live, liveReason?: "pty"|"process", panes: [{ paneId, terminalId?, contentType, agent?, state?, process? }], labels?, kept?: { reason, detail?, at } | null, hidden }] }. `workspaceId` is the repo\'s workspace (the same for every row, absent when the repo has none); `isActive` marks the worktree the workspace looks at (exactly one); `panes` are the panes whose working directory is inside that worktree; `labels` are the spawn labels of that worktree; `kept` is the last retire that left it in place and why. `integratedInto` is checked against origin/<base> as last fetched (no network unless `fetch: true`); merged PRs are not asked here (onda_worktree_retire does). `live`: a terminal of that worktree or any process with its cwd inside.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -734,6 +750,38 @@ const TOOLS = [
         fetch: { type: 'boolean', description: 'Default false. true: fetch master/main/develop from origin first.' },
       },
       required: ['repoRoot'],
+    },
+  },
+
+  {
+    name: 'onda_worktree_activate',
+    description:
+      'Make one worktree of a repo the active one in its workspace: the git panel, the file panel, the status bar and new terminals follow it, and the focus goes to its first pane when it has one. Panes of the other worktrees keep running where they are. Name the worktree by `path`, by `branch`, or `main: true` for the main tree (exactly one of the three). Returns { workspaceId, worktree: { path, branch, isMain }, focusedPaneId? }. A host older than Onda 2.3 answers "Unknown method".',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        workspaceId: { type: 'string', description: 'The repo\'s workspace.' },
+        path: { type: 'string', description: 'Folder of the worktree to activate.' },
+        branch: { type: 'string', description: 'Branch checked out in the worktree to activate.' },
+        main: { type: 'boolean', description: 'true: activate the main tree.' },
+      },
+      required: ['workspaceId'],
+    },
+  },
+  {
+    name: 'onda_worktree_create',
+    description:
+      'Create (or reuse) the git worktree of a branch without starting an agent in it, e.g. before an orchestrator hands out work. Same rules as the `worktree` field of onda_agent_spawn: next to the repo at `<repoRoot>-<branch>` (slashes in the branch become dashes), `git worktree add -b <branch> <path> <from>` for a new branch and without -b for an existing one; an existing worktree of that branch is reused (`created: false`); the cap `agents.maxWorktreesPerRepo` applies (errorCode "worktree_cap"). Name the repo by `repoRoot` or by its `workspaceId`. `activate: true` also makes it the active worktree. Returns { workspaceId, worktree: { path, branch, created, branchCreated, from?, activated } }. A host older than Onda 2.3 answers "Unknown method".',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        repoRoot: { type: 'string', description: 'Root of the repo (a linked worktree of it also works). Use this or workspaceId.' },
+        workspaceId: { type: 'string', description: 'The repo\'s workspace. Use this or repoRoot.' },
+        branch: { type: 'string', description: 'Branch the worktree has checked out.' },
+        from: { type: 'string', description: 'Start point of a new branch. Default: the repo\'s base branch.' },
+        activate: { type: 'boolean', description: 'Default false. true: make the new worktree the active one.' },
+      },
+      required: ['branch'],
     },
   },
 
@@ -860,11 +908,11 @@ const TOOLS = [
         // --- placement=workspace ---
         workspaceRootPath: {
           type: 'string',
-          description: 'placement=workspace: filesystem path used to locate (or create) the workspace. Matched by real path (symlinks resolved, letter case ignored on case-insensitive volumes), so any spelling of an existing folder reuses its workspace. Only if no workspace has that folder is one created (name = basename unless `workspaceName` is given), registered by its real path.',
+          description: 'placement=workspace: filesystem path used to locate (or create) the workspace. Matched by real path (symlinks resolved, letter case ignored on case-insensitive volumes), so any spelling of an existing folder reuses its workspace; the folder of a linked worktree reuses the workspace of its repo (the agent starts in that worktree, `worktree.created: false`). Only if no workspace has that folder is one created (name = basename unless `workspaceName` is given), registered by its real path.',
         },
         workspaceName: {
           type: 'string',
-          description: 'placement=workspace: optional override for the auto-created workspace name. Ignored if a workspace already matches `workspaceRootPath`.',
+          description: 'placement=workspace: optional override for the auto-created workspace name. Ignored if a workspace already matches `workspaceRootPath`, and ignored with `worktree` (the repo\'s workspace is named after the repo).',
         },
         targetWindowId: {
           type: 'string',
@@ -933,7 +981,7 @@ const TOOLS = [
         },
         worktree: {
           type: 'object',
-          description: 'Run the agent in its own git worktree (placement="workspace" only; replaces workspaceRootPath). If no linked worktree has `branch` checked out, one is created next to the repo at `<repoRoot>-<branch>` (slashes in the branch become dashes: repo `~/P/onda` + branch `feat/x` → `~/P/onda-feat-x`), with `git worktree add -b <branch> <path> <from>` for a new branch, or without -b if the branch exists. An existing worktree for that branch is reused. The folder is marked trusted in ~/.claude/.claude.json and ~/.claude-a/.claude.json, and `trust` defaults to "accept". The workspace is named "<agentName or repo> · <branch>" unless workspaceName is given. The result has `worktree: { path, branch, created, branchCreated, from? }`. Fails with errorCode "worktree_failed" (e.g. branch checked out in the main tree, path taken by another folder). With a cap set (agents.maxWorktreesPerRepo > 0), a spawn that would create a new worktree in a repo already at the cap fails with errorCode "worktree_cap" + `worktrees` (same shape as onda_worktree_list): retire some with onda_worktree_retire first; reusing an existing worktree does not count. One agent per worktree: never spawn two in the same folder.',
+          description: 'Run the agent in its own git worktree (placement="workspace" only; replaces workspaceRootPath). If no linked worktree has `branch` checked out, one is created next to the repo at `<repoRoot>-<branch>` (slashes in the branch become dashes: repo `~/P/onda` + branch `feat/x` → `~/P/onda-feat-x`), with `git worktree add -b <branch> <path> <from>` for a new branch, or without -b if the branch exists. An existing worktree for that branch is reused. The folder is marked trusted in ~/.claude/.claude.json and ~/.claude-a/.claude.json, and `trust` defaults to "accept". The agent runs in a pane of the repo\'s workspace (created on the main tree if there is none, named after the repo): never a workspace per branch. The result has `workspaceId` (the repo\'s), `paneId`, and `worktree: { path, branch, created, branchCreated, from?, activated }`; `activated` is true when the spawn made that worktree the active one, which happens only if the workspace had nothing alive before. `workspaceName` is ignored together with `worktree` (the result says `workspaceNameIgnored: true`). Panes are picked among those of that worktree: the same agent already there comes back with `reusedAgent`. Fails with errorCode "worktree_failed" (e.g. branch checked out in the main tree, path taken by another folder). With a cap set (agents.maxWorktreesPerRepo > 0), a spawn that would create a new worktree in a repo already at the cap fails with errorCode "worktree_cap" + `worktrees` (same shape as onda_worktree_list): retire some with onda_worktree_retire first; reusing an existing worktree does not count. One agent per worktree: never spawn two in the same folder.',
           properties: {
             repoRoot: { type: 'string', description: 'Root of the repo (its main tree; a linked worktree of it also works).' },
             branch: { type: 'string', description: 'Branch to work on, e.g. "feat/login".' },
@@ -944,7 +992,7 @@ const TOOLS = [
         labels: {
           type: 'object',
           additionalProperties: { type: 'string' },
-          description: 'Opaque string pairs stored on the workspace (max 16 keys, values up to 200 characters), e.g. { "task": "T-12", "owner": "orchestrator-a" }. Onda never interprets them: they survive a restart and come back in the spawn result, onda_workspace_list, onda_workspace_locate and onda_worktree_list, so whoever spawned an agent can find its workspace and worktree again. Given again on a later spawn in the same workspace, keys are merged (a key given again is overwritten). Invalid labels: errorCode "labels_invalid", nothing started.',
+          description: 'Opaque string pairs stored on the worktree (per worktree, not per workspace; max 16 keys, values up to 200 characters), e.g. { "task": "T-12", "owner": "orchestrator-a" }. Onda never interprets them: they survive a restart and come back in the spawn result, onda_workspace_list, onda_workspace_locate and onda_worktree_list, so whoever spawned an agent can find its workspace and worktree again. Given again on a later spawn in the same worktree, keys are merged (a key given again is overwritten). Invalid labels: errorCode "labels_invalid", nothing started.',
         },
         subscribe: {
           type: 'boolean',
@@ -1054,7 +1102,7 @@ const TOOLS = [
         unmountWorkspace: { type: 'boolean', description: 'Default false. When true, the workspace is dropped from its window\'s mosaic. The workspace itself still exists in the global list.' },
         closeWindow: { type: 'boolean', description: 'Default false. When true, the host window is closed via `BrowserWindow.close()`. Requires `windowId`. Only use when YOU spawned this window via `onda_window_new`.' },
         windowId: { type: 'string', description: 'Required when `closeWindow` is true.' },
-        removeWorktree: { type: 'boolean', description: 'For an agent spawned with `worktree` the default is true, and killPty defaults to true when `terminalId` is given: closing it kills the session, unmounts the workspace once empty, then runs the onda_worktree_retire checks (nothing in use, clean, work already in origin\'s master/main/develop by merge, squash or merged PR) and, if they pass, `git worktree remove` + prune and deletes the workspace (its folder is gone). The result then has `closedViaRetire: true`. Here the branch is never deleted and no tag is made (for that, call onda_worktree_retire). Result: `worktreeRemoved: { path, branch, mergedInto, integratedBy }` + `workspaceDeleted`, or `worktreeKept: { reason, detail? }` with the onda_worktree_retire reasons, or "workspace_not_found", "remote_workspace", "workspace_unknown"; when the worktree is kept its workspace is unmounted and archived (`workspaceArchived: true`), or `workspaceKept: { reason }` if something in it still runs. Pass false to only stop watching (old behaviour). Any other agent: default false, true runs the same retire.' },
+        removeWorktree: { type: 'boolean', description: 'For an agent spawned with `worktree` the default is true, and killPty defaults to true when `terminalId` is given: closing it kills the session, then runs the onda_worktree_retire checks (nothing in use, clean, work already in origin\'s master/main/develop by merge, squash or merged PR) and, if they pass, `git worktree remove` + prune and closes the panes of that worktree. The repo\'s workspace always stays. The result then has `closedViaRetire: true`. Here the branch is never deleted and no tag is made (for that, call onda_worktree_retire). Result: `worktreeRemoved: { path, branch, mergedInto, integratedBy }` + `panesClosed` + `workspaceId`, or `worktreeKept: { reason, detail?, path }` with the onda_worktree_retire reasons, or "workspace_not_found", "remote_workspace", "workspace_unknown"; when the worktree is kept its panes stay. `workspaceDeleted` and `workspaceArchived` are deprecated: always false, kept one release for older callers. Pass false to only stop watching (old behaviour). Any other agent: default false, true runs the same retire.' },
       },
     },
   },
@@ -1063,7 +1111,7 @@ const TOOLS = [
   {
     name: 'onda_context',
     description:
-      'Get the Onda context for the terminal where this AI agent is running. Returns paneId, tabId, workspaceId. Use this FIRST to know which pane/tab you are in before splitting or sending commands.',
+      'Get the Onda context for the terminal where this AI agent is running. Returns paneId, tabId, workspaceId and `worktree` ({ path, branch, isMain } of the worktree your pane works in, null when it is in none or the host is older than Onda 2.3). Use this FIRST to know which pane/tab you are in before splitting or sending commands.',
     inputSchema: {
       type: 'object' as const,
       properties: {},
@@ -1274,6 +1322,9 @@ const TOOL_MAP: Record<string, { method: string; mapParams?: (args: Record<strin
   onda_workspace_remove_dead: { method: 'workspace.removeDead' },
   onda_worktree_retire: { method: 'worktree.retire' },
   onda_worktree_list: { method: 'worktree.list' },
+  onda_worktree_activate: { method: 'worktree.activate' },
+  onda_worktree_create: { method: 'worktree.create' },
+  onda_workspace_tidy: { method: 'workspace.tidy' },
 
   // Advanced spawn + macro
   onda_terminal_spawn: {
@@ -1388,7 +1439,7 @@ const TOOL_MAP: Record<string, { method: string; mapParams?: (args: Record<strin
 // without it. Keep it short: it costs context on every session.
 const SERVER_INSTRUCTIONS = `Onda is the terminal emulator you are running inside. These tools mutate the live app the user is looking at — treat pane/workspace state as shared with them.
 
-Layout model: Window ⊃ Workspace (root folder + panes, mounted as a tile in a window) ⊃ Pane (terminal | editor | diff). Terminals have a stable terminalId.
+Layout model: Window ⊃ Workspace (a folder; a git repo with its worktrees as children) ⊃ Pane (terminal | editor | diff). A workspace is mounted as a tile in a window; a repo is one workspace, its main tree and linked worktrees are its children (one of them active), and each pane belongs to the worktree that holds its working directory. Terminals have a stable terminalId.
 
 TO OPEN A WORKSPACE AND START AN AGENT SESSION (claude, codex, qwen, ...), ALWAYS use the agent_* flow:
   1. onda_agent_spawn(placement="workspace", workspaceRootPath=<path>, agentBin="claude", agentArgs=[flags only], readyPattern="❯|Welcome back|Try \\"")
@@ -1398,7 +1449,7 @@ TO OPEN A WORKSPACE AND START AN AGENT SESSION (claude, codex, qwen, ...), ALWAY
   3. onda_agent_wait(sessionId, doneRegex, timeoutMs<=15000 in a loop) → wait for a sentinel.
   4. onda_agent_close(sessionId) → detach (soft); + killPty + terminalId → kill it, and the spawned pane goes with it. A workspace the spawn mounted leaves the mosaic once nothing alive is left in it (unmountWhenEmpty overrides). Leftover "[Process exited]" panes: onda_workspace_prune(workspaceId).
 Placement variants: "background" (as "workspace", but the session runs unseen: listed as live, a click in the app mounts it — for trial sessions and delegates nobody needs to watch), "pane-split" (split the pane you are in), "same-workspace" (add a pane to an already-mounted workspaceId).
-Parallel agents on one repo: onda_agent_spawn(worktree={repoRoot, branch}) creates/reuses the branch's worktree next to the repo, trusts it and mounts it; one agent per worktree. onda_agent_close(killPty, terminalId, workspaceId, removeWorktree=true) removes it only if nothing runs there, it is clean and its work is in origin's base (merge, squash or merged PR; else worktreeKept.reason), and deletes the workspace (kept: archived, with worktreeKept.reason); the branch stays. For an agent spawned with worktree this is the default of onda_agent_close(terminalId): removeWorktree=false only stops watching. onda_worktree_retire(workspaceId) also archives the branch under a tag and deletes it; onda_worktree_list(repoRoot) shows what is open. Spawn labels (labels={...}) stay on the workspace to find it again. Dead workspaces (rootExists=false in onda_workspace_list) are deleted, not archived: onda_workspace_remove (mode defaults to delete there) or all at once with onda_workspace_remove_dead(dryRun first).
+Parallel agents on one repo: onda_agent_spawn(worktree={repoRoot, branch}) creates/reuses the branch\'s worktree next to the repo, trusts it and opens a pane for the agent in the repo\'s workspace (never a workspace per branch; the result has the repo\'s workspaceId, paneId and worktree.activated); one agent per worktree, labels are kept per worktree. Several agents on one repo are several panes of one tile. onda_agent_close(killPty, terminalId, workspaceId, removeWorktree=true) removes the worktree only if nothing runs there, it is clean and its work is in origin\'s base (merge, squash or merged PR; else worktreeKept.reason), and closes its panes; the workspace stays and the branch stays. For an agent spawned with worktree this is the default of onda_agent_close(terminalId): removeWorktree=false only stops watching. onda_worktree_retire(workspaceId, path) also archives the branch under a tag and deletes it (panesClosed in the result; the workspace is never deleted; workspaceDeleted/workspaceArchived are deprecated and always false); onda_worktree_list(repoRoot) shows each worktree with its panes and which one is active; onda_worktree_create makes a worktree without an agent and onda_worktree_activate picks the one the workspace looks at (git panel, files, new terminals); onda_workspace_tidy(by="worktree") groups a workspace\'s panes by worktree. Spawn labels (labels={...}) stay on the worktree to find it again. Dead workspaces (rootExists=false in onda_workspace_list) are deleted checkouts, not archived: onda_workspace_remove (mode defaults to delete there) or all at once with onda_workspace_remove_dead(dryRun first).
 Live = an agent session or a non-shell process (live_reason agent|process in the list tools); a shell at its prompt is not live. Workspaces are born empty (no implicit terminal). A spawn never duplicates an agent already in the workspace; after a spawn TIMEOUT, onda_terminal_list(workspaceId) before anything else — never a blind second spawn. After each spawn that put a workspace on screen, call onda_workspace_tile(layout="main", anchorWorkspaceId=<your workspace>): you large on the left, the agents in a column on the right.
 
 DO NOT: pass the task prompt as an argv element (agentArgs, terminal_spawn args, launch_session prompt) — a single apostrophe breaks zsh parsing and the prompt never reaches the agent. DO NOT use onda_launch_session (deprecated; same backend, worse ergonomics). DO NOT hand-assemble workspace_create → window_mount_workspace → workspace_add_terminal → terminal_spawn → send_keys unless agent_spawn returned an error you must work around.
@@ -1408,7 +1459,7 @@ Terminal I/O rules: onda_terminal_read is a snapshot, subscribe+poll is a stream
 const server = new Server(
   {
     name: 'onda',
-    version: '0.6.0',
+    version: '0.7.0',
   },
   {
     capabilities: {
@@ -1436,6 +1487,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const context = {
       ...ONDA_CONTEXT,
       uiMode: sessionInfo?.uiMode || process.env.ONDA_UI_MODE || null,
+      // The worktree holding the calling pane's working directory (Onda 2.3+); null elsewhere or on an older host.
+      worktree: sessionInfo?.worktree ?? null,
     };
     return {
       content: [{

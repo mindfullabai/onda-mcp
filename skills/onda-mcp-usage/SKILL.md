@@ -2,7 +2,7 @@
 name: onda-mcp-usage
 description: Best practices for driving Onda (terminal emulator) from Claude Code via the `onda` MCP server (`mcp__onda__*`). Covers workspaces/windows/panes/terminals + buffer reading (read/subscribe/poll/wait_for/send_keys) + spatial awareness (layout/screenshot). Use whenever you call any `mcp__onda__*` tool or the user mentions Onda, pane, workspace, terminal listener, presence badge, inception loop (Claude controlling Onda from inside Onda). Triggers — onda mcp, drive onda, control onda terminal, show pane, workspace layout, onda screenshot, kai watcher, terminal listener.
 metadata:
-  version: 0.10.0
+  version: 0.11.0
   source: '@mindfullabai/onda-mcp'
 ---
 
@@ -57,12 +57,16 @@ This skill tells you **how to correctly use the `mcp__onda__*` tools** exposed b
 
 ## Compatibility note
 
+New in `@mindfullabai/onda-mcp@0.7.0` (skill 0.11.0; needs an Onda build with WT30, 2.3 or later): **one workspace per repo, worktrees as its children.** A git repo is one workspace; its main tree and linked worktrees are children of it, one of them active, and every pane belongs to the worktree that holds its working directory. A spawn with `worktree` opens a pane in the repo's workspace instead of a workspace per branch. New tools: `onda_worktree_activate`, `onda_worktree_create`, `onda_workspace_tidy`. Changed results are listed in "Worktrees inside the repo workspace" below.
+- **Host new, MCP old**: works. The host answers with extra fields and `workspaceDeleted` / `workspaceArchived` as `false`, but the tool descriptions an old MCP shows still describe a workspace per worktree, and the new tools are missing. Update the MCP and this skill (the skill is synced at boot).
+- **Host old, MCP new**: `onda_worktree_activate`, `onda_worktree_create` and `onda_workspace_tidy` answer `Unknown method`; `worktreePath` on `onda_workspace_focus` / `onda_window_mount_workspace` is ignored; spawn, close and retire answer with the old fields (a workspace per worktree, `workspaceDeleted`, `workspaceArchived`), so trust the result you get, not the 0.7.0 description.
+
 New in `@mindfullabai/onda-mcp@0.6.0` (needs an Onda build from 14 Oct 2026 or later, branch `feat/mcp-worktree`; an older host answers `Unknown method` for `workspace.remove` and ignores `worktree` / `removeWorktree`):
-- **Worktrees as disposable workspaces**: `onda_agent_spawn(worktree={repoRoot, branch, from?})` creates or reuses the branch's git worktree next to the repo, trusts it for Claude Code and mounts it. `onda_agent_close(removeWorktree=true)` removes it only when clean and merged. See "Worktrees and disposable workspaces" below.
+- **Worktrees**: `onda_agent_spawn(worktree={repoRoot, branch, from?})` creates or reuses the branch's git worktree next to the repo and trusts it for Claude Code; since 0.7.0 the agent runs in a pane of the repo's workspace. `onda_agent_close(removeWorktree=true)` removes the worktree only when clean and merged. See "Worktrees inside the repo workspace" below.
 - **`onda_workspace_remove`**: archive or delete a workspace nobody is using (`mode`; default delete when its folder is gone, archive otherwise).
 - **`onda_workspace_remove_dead`**: delete every workspace whose folder is gone, in one go (`dryRun` lists them).
-- **`onda_workspace_list` / `onda_workspace_locate`** now return `archivedAt`, `rootExists`, `hostId` and `worktree`; `workspace_list` hides archived workspaces unless `includeArchived: true`.
-- **`onda_workspace_list` is big with many workspaces** (100+ KB): narrow it with `live`, `dead` (folder gone), `archived`, `worktree` and ask for `compact: true` (`{ id, name, rootPath, state, mountedIn }`, state one of archived / dead / live / idle). `archivedReason` tells who archived one (manual / agent / worktree-retired).
+- **`onda_workspace_list` / `onda_workspace_locate`** now return `archivedAt`, `rootExists`, `hostId`, `worktree` and, since 0.7.0, `repoRoot` and `worktrees: { count, active, live }`; `workspace_list` hides archived workspaces unless `includeArchived: true`.
+- **`onda_workspace_list` is big with many workspaces** (100+ KB): narrow it with `live`, `dead` (folder gone), `archived`, `worktree` and ask for `compact: true` (`{ id, name, rootPath, state, mountedIn }`, state one of archived / dead / live / idle). `archivedReason` tells who archived one (manual / agent; older ones may say worktree-retired).
 - `onda_workspace_prune` and `unmountWhenEmpty` on spawn/close (see "Empty workspaces").
 - Fix: a spawn into a workspace it just created/mounted reuses that workspace's fresh shell even while the shell is still loading its profile. Before, the shell read as "busy", a second pane was added, and the orphan shell kept the workspace alive after the agent was gone.
 
@@ -96,7 +100,7 @@ You (Claude Code) run inside **a terminal inside Onda**. The `onda-mcp` server t
 
 Onda has three layout primitives:
 - **Window**: Electron BrowserWindow. N workspaces can coexist in one Window in tiled mode.
-- **Workspace**: root folder + collection of panes. Mounted into a Window.
+- **Workspace**: a folder with its panes, mounted into a Window. A git repo is one workspace: its worktrees (the main tree and the linked ones) are children of it, one of them active. Worktrees are not workspaces: they are not mounted, archived or listed on their own.
 - **Pane**: container with `contentType: terminal | editor | diff`. Terminals have a stable `terminalId` (survives split/merge).
 
 Internal workspace layout = mosaic-component tree. Read it via `onda_workspace_layout`.
@@ -119,6 +123,10 @@ Internal workspace layout = mosaic-component tree. Read it via `onda_workspace_l
 | "Wait until the delegated agent reports done" | `onda_agent_wait` with `doneRegex` |
 | "Clean up after a delegation" | `onda_agent_close` (escalation: soft → kill → unmount → close window) |
 | "Remove the [Process exited] panes" | `onda_workspace_prune` |
+| "Run an agent on a branch of this repo" | `onda_agent_spawn(worktree={repoRoot, branch})`: a pane of the repo's workspace |
+| "Make a worktree the one the workspace looks at" | `onda_worktree_activate` |
+| "Create a worktree, no agent yet" | `onda_worktree_create` |
+| "Group a workspace's panes by worktree" | `onda_workspace_tidy(by="worktree")` |
 | "Read what the terminal has printed so far" | `onda_terminal_read` (no subscribe needed) |
 | "I want to receive every new output chunk" | `subscribe` + `poll` loop |
 | "Wait until the build finishes" | `onda_terminal_wait_for` with regex |
@@ -335,48 +343,58 @@ When no live terminal is left in a workspace after an agent's pane closes (agent
 - A user's shell that exits stays as "[Process exited]", as always: only agent panes clean up after themselves.
 - `"[Process exited]"` panes left next to live ones (exited while the workspace was not on screen, or before a new pane was added): `workspace_prune(workspaceId)` removes every dead terminal pane, whoever opened it, and applies the same unmount rule if nothing is left.
 
-### Worktrees and disposable workspaces
+### Worktrees inside the repo workspace
 
-Two or three agents on the same repo: one git worktree per branch, one agent per worktree. **Never two agents in the same folder.**
+Two or three agents on the same repo: one git worktree per branch, one agent per worktree, all of them as panes of **the repo's one workspace**. **Never two agents in the same folder.** A worktree is a child of the workspace, never a workspace: there is no workspace per branch to mount, archive or delete.
 
 ```python
 # Spawn: creates <repoRoot>-<branch> (slashes → dashes) if the branch has no worktree yet,
 # with `git worktree add -b <branch> <path> <from>` (no -b if the branch exists);
 # marks it trusted in ~/.claude/.claude.json and ~/.claude-a/.claude.json (trust defaults to "accept");
-# names the workspace "<agentName or repo> · <branch>", mounts it, boots the agent.
+# opens a pane for the agent in the repo's workspace (created on the main tree, named after the repo, if
+# there is none) and boots the agent there. `workspaceName` is ignored together with `worktree`.
 spawn = agent_spawn(placement="workspace", agentBin="claude", agentArgs=["--dangerously-skip-permissions"],
                     agentName="kai-A",
                     worktree={"repoRoot": "/Users/m/Projects/onda", "branch": "feat/login"},  # from= default master|main|develop
+                    labels={"task": "T-12"},                                                 # stored on this worktree
                     readyPattern="❯|Welcome back|Try \"")
-# → {..., worktree: {path: "/Users/m/Projects/onda-feat-login", branch, created, branchCreated, from}}
+# → {workspaceId (the repo's), paneId, terminalId, sessionId, state,
+#    worktree: {path: "/Users/m/Projects/onda-feat-login", branch, created, branchCreated, from, activated}, labels, ...}
 agent_prompt(spawn.terminalId, "...")
 # ... agent works and commits; you (or the user) merge the branch into master/main/develop ...
 
-# Close: kill, unmount once empty, then the onda_worktree_retire checks (nothing running inside, clean,
-# work already in origin's master/main/develop by merge, squash or merged PR): `git worktree remove`
-# + prune, and the workspace is archived. The branch stays, no tag.
+# Close: kill, then the onda_worktree_retire checks (nothing running inside, clean, work already in
+# origin's master/main/develop by merge, squash or merged PR): `git worktree remove` + prune, and the
+# panes of that worktree are closed. The workspace stays. The branch stays, no tag.
 agent_close(sessionId=spawn.sessionId, terminalId=spawn.terminalId, killPty=True,
             workspaceId=spawn.workspaceId, removeWorktree=True)
-# → {worktreeRemoved: {path, branch, mergedInto, integratedBy}, workspaceArchived: True, ...}
-# → or {worktreeKept: {reason: "not_integrated" | "dirty" | "in_use" | "no_remote" | ..., detail}}: nothing touched.
+# → {worktreeRemoved: {path, branch, mergedInto, integratedBy}, panesClosed: [...], workspaceId, ...}
+# → or {worktreeKept: {reason: "not_integrated" | "dirty" | "in_use" | "no_remote" | ..., detail, path}}: nothing touched.
 
 # Retire for good, branch included: archive tag on HEAD pushed to origin, worktree removed,
 # local branch deleted, remote branch deleted with a merged PR or a normal merge (kept after a squash).
-worktree_retire(workspaceId=spawn.workspaceId, dryRun=True)   # every check, nothing changed
-worktree_retire(workspaceId=spawn.workspaceId)                # archiveTagPrefix= default "archive/"
-# → {retired: True, integratedBy: "ancestor"|"tree"|"pr", tag: "archive/feat/login", branchDeleted, remoteBranchDeleted, checks}
+worktree_retire(workspaceId=spawn.workspaceId, path=spawn.worktree.path, dryRun=True)   # every check, nothing changed
+worktree_retire(workspaceId=spawn.workspaceId, path=spawn.worktree.path)                # archiveTagPrefix= default "archive/"
+# → {retired: True, integratedBy: "ancestor"|"tree"|"pr", tag: "archive/feat/login", branchDeleted, remoteBranchDeleted, workspaceId, panesClosed, checks}
 # → or {retired: False, reason, detail, checks}: report it to the owner of the work, do not force it.
 ```
 
-- In doubt it keeps: no `origin`, origin unreachable, `gh` missing and a branch that is neither an ancestor nor a no-op merge of origin's base → kept with the reason.
-- Not merged yet? The worktree and the (unmounted) workspace stay. Spawn again with the same `worktree` to resume: the existing worktree is reused and the workspace remounted (restored if archived).
-- `worktree_list(repoRoot)` shows every linked worktree with `clean`, `integratedInto`, `live`, `workspaceId` and spawn `labels`: what can go.
-- `agent_spawn(..., labels={"task": "T-12", "owner": "..."})` stores opaque pairs on the workspace; they come back in spawn, `workspace_list`, `workspace_locate` and `worktree_list`, also after a restart.
-- With a cap set (`agents.maxWorktreesPerRepo`, default 0 = none), a spawn that would open one worktree too many fails with `errorCode: "worktree_cap"` and the list: retire some first.
-- `worktree` needs `placement="workspace"`; it replaces `workspaceRootPath`. Errors come back as `errorCode: "worktree_failed"` (branch checked out in the main tree, path taken by another folder, not a repo).
-- `workspace_list` / `workspace_locate` show `worktree: {repoRoot, branch, isMain, clean, mergedInto, integratedInto}` for any workspace whose folder is a worktree root (null otherwise, and for remote workspaces).
+- **`activated`**: a spawn makes its worktree the active one only when the workspace had nothing alive before; otherwise the active worktree stays, so an agent never moves the git panel of someone working in another worktree. Use `worktree_activate` to choose.
+- **Active worktree**: the one the workspace looks at: git panel, file panel, status bar and the folder of new terminals follow it; the other worktrees' panes keep running. `worktree_activate(workspaceId, path | branch | main=True)` → `{workspaceId, worktree: {path, branch, isMain}, focusedPaneId?}`; the focus goes to the worktree's first pane when it has one. `workspace_focus` and `window_mount_workspace` take `worktreePath` for the same.
+- **`worktree_create(repoRoot | workspaceId, branch, from?, activate?)`** makes the worktree without an agent (same rules and cap as spawn) → `{workspaceId, worktree: {path, branch, created, branchCreated, from?, activated}}`. Spawn on that branch later reuses it.
+- **`workspace_tidy(workspaceId, by="worktree")`** puts the panes of the same worktree next to each other. A spawn never does it by itself: a delegate's pane goes next to the last pane of its worktree (or at the end) and nothing else moves. With many agents, call tile for the workspaces and tidy for the panes.
+- **Dedup is per worktree**: the same agent already running in that worktree comes back with `reusedAgent: true`; the same agent in another worktree of the repo is a different session.
+- **Retire and close never delete or archive the workspace.** `workspaceDeleted` and `workspaceArchived` are deprecated: always `false`, kept one release for older callers. Use `panesClosed` instead. If the active worktree is retired, the main tree becomes active.
+- In doubt it keeps: no `origin`, origin unreachable, `gh` missing and a branch that is neither an ancestor nor a no-op merge of origin's base → kept with the reason, and its panes stay.
+- Not merged yet? The worktree and its panes stay. Spawn again with the same `worktree` to resume: the existing worktree is reused (a pane of the same agent comes back with `reusedAgent`).
+- `worktree_list(repoRoot)` shows every worktree of the repo, main tree included, with `isMain`, `isActive`, `clean`, `integratedInto`, `live`, its `panes` (`paneId`, `terminalId?`, `contentType`, `agent?`, `state?`, `process?`), `labels`, `kept` (the last retire that left it and why) and `hidden`; `workspaceId` is the repo's, the same for every row.
+- `agent_spawn(..., labels={"task": "T-12", "owner": "..."})` stores opaque pairs on the worktree (not the workspace); they come back in spawn and `worktree_list`, also after a restart.
+- With a cap set (`agents.maxWorktreesPerRepo`, default 0 = none), a spawn (or `worktree_create`) that would open one worktree too many fails with `errorCode: "worktree_cap"` and the list: retire some first.
+- `worktree` needs `placement="workspace"` or `"background"`; it replaces `workspaceRootPath`. Errors come back as `errorCode: "worktree_failed"` (branch checked out in the main tree, path taken by another folder, not a repo).
+- **A folder that is a linked worktree** resolves to its repo's workspace: `workspace_locate(rootPath=<worktree>)` and `workspace_create(rootPath=<worktree>)` return the repo's workspace with `worktree: {path, branch, matched: true}`, and a spawn with that `workspaceRootPath` starts the agent there with `worktree.created: false`.
+- `workspace_list` / `workspace_locate` show `repoRoot` and `worktrees: {count, active: {path, branch} | null, live}` for a repo workspace; `worktree: {repoRoot, branch, isMain, clean, mergedInto}` stays for the main tree. `onda_context` adds `worktree: {path, branch, isMain} | null`: the worktree your own pane works in.
 
-**Cleaning up dead workspaces.** `workspace_list()` → entries with `rootExists: false` (folder gone) and `mountedIn: null` → `workspace_remove(workspaceId)` deletes them (default when the folder is gone: an archive would have nothing to restore; `mode="archive"` there is refused with `nothing_to_archive`; the folder on disk is never touched). `workspace_remove_dead(dryRun=True)` lists all of them, then `workspace_remove_dead()` deletes them in one go, skipping the ones in use with the reason. It refuses a mounted workspace (`errorCode: "mounted"`: `workspace_unmount` first) and one with live terminals or unsaved editors (`errorCode: "live_panes"`, with the list). On the Free plan the workspace cap counts **active** workspaces whose folder exists: deleting or archiving one frees a slot, and a workspace whose folder is gone holds none. Restoring checks the cap again, so `agent_spawn` on the folder of an archived workspace fails with `workspace_limit_reached` when the active ones are at the cap (a worktree that spawn had just created is removed again, `worktree.removedAgain: true`): delete or archive another one first.
+**Cleaning up dead workspaces.** `workspace_list()` → entries with `rootExists: false` (folder gone) and `mountedIn: null` → `workspace_remove(workspaceId)` deletes them (default when the folder is gone: an archive would have nothing to restore; `mode="archive"` there is refused with `nothing_to_archive`; the folder on disk is never touched). `workspace_remove_dead(dryRun=True)` lists all of them, then `workspace_remove_dead()` deletes them in one go, skipping the ones in use with the reason. It refuses a mounted workspace (`errorCode: "mounted"`: `workspace_unmount` first) and one with live terminals or unsaved editors (`errorCode: "live_panes"`, with the list). On the Free plan the workspace cap counts **active** workspaces whose folder exists: deleting or archiving one frees a slot, and a workspace whose folder is gone holds none. Restoring checks the cap again, so `agent_spawn` on the folder of an archived workspace fails with `workspace_limit_reached` when the active ones are at the cap (a worktree that spawn had just created is removed again, `worktree.removedAgain: true`, deprecated since WT30): delete or archive another one first.
 
 ### Boot states: what `state` means
 
@@ -666,7 +684,7 @@ Workspace:
 - `onda_workspace_list` — all workspaces + `mountedIn`
 - `onda_workspace_locate` — find by name/id/rootPath
 - `onda_workspace_create` — create new (rootPath required)
-- `onda_workspace_focus` — switch in focused window
+- `onda_workspace_focus` — switch in focused window (`worktreePath?` also activates a worktree)
 - `onda_workspace_layout` — mosaic tree + paneIds + activePaneId + viewport
 - `onda_workspace_add_terminal` — spawn pane with optional direction
 - `onda_workspace_tile` — arrange the workspaces mounted in a window: main (anchor large on the left, the others in a column), grid (default, anchor top left, others in order of opening), columns, rows
@@ -710,6 +728,11 @@ Agent delegation (preferred since 0.4.0, split into spawn+prompt in 0.5.0):
 - `onda_agent_wait` — block on the spawned agent's sessionId until `doneRegex` matches; returns matched chunk + tail content.
 - `onda_agent_close` — escalation cleanup: unsubscribe → kill PTY → close pane → unmount workspace → close window. Each step opt-in via boolean flags; a workspace agent_spawn mounted unmounts by itself once empty (`unmountWhenEmpty` overrides).
 - `onda_workspace_prune` — remove the "[Process exited]" panes of a mounted workspace; unmount it if nothing alive is left and the rule above says so.
+- `onda_workspace_tidy` — reorder the panes of a mounted workspace so the panes of one worktree sit together (`by: "worktree"`).
+- `onda_worktree_list` — the worktrees of a repo with their panes, active one, `labels` and `kept`.
+- `onda_worktree_activate` — make a worktree the active one of its workspace (`path` | `branch` | `main`).
+- `onda_worktree_create` — create or reuse a branch's worktree without an agent (`activate?`).
+- `onda_worktree_retire` — retire a merged worktree behind the closed-door checks; its panes close, the workspace stays.
 
 ## Versioning
 
