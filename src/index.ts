@@ -1480,7 +1480,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   if (name === 'onda_context') {
     let sessionInfo: any = null;
     try {
-      sessionInfo = await callOnda('session.current');
+      // The host resolves the calling pane's worktree from terminalId/paneId (or cwd): say who is asking.
+      sessionInfo = await callOnda('session.current', {
+        ...(ONDA_CONTEXT.terminalId ? { terminalId: ONDA_CONTEXT.terminalId } : {}),
+        ...(ONDA_CONTEXT.paneId ? { paneId: ONDA_CONTEXT.paneId } : {}),
+        cwd: process.cwd(),
+      });
     } catch {
       // App may not be reachable, return env-only context
     }
