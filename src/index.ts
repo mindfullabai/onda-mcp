@@ -625,6 +625,18 @@ const TOOLS = [
     },
   },
   {
+    name: 'onda_workspace_cleanup',
+    description:
+      'The cleanup Onda runs once at startup (Onda 2.4, OD24-F6), on demand: deletes the workspaces whose folder is gone and those on a temporary folder (/tmp, /private/tmp, the system temp folder, scratchpads), archives (reason "stale") those not opened for `staleDays` days. Never remote, pinned (except a gone folder), mounted or live ones (skipped with the reason); folders on disk are never touched; an archived workspace comes back as before. **Dry run by default**: pass `dryRun: false` to act. Returns { success, dryRun, staleDays, deleted: [{ workspaceId, name, rootPath, action: "delete-dead"|"delete-temporary" }], archived: [...], skipped: [{ ..., reason }] }. An older Onda answers Unknown method.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        dryRun: { type: 'boolean', description: 'Default true: list what would happen and change nothing. false = do it.' },
+        staleDays: { type: 'number', description: 'Archive the workspaces not opened for this many days. Default 30; 0 = never archive.' },
+      },
+    },
+  },
+  {
     name: 'onda_workspace_prune',
     description:
       'Remove the "[Process exited]" panes of a mounted workspace — any dead terminal pane, whoever opened it — and keep the live ones. If nothing alive is left (no live terminal, no editor/diff pane), the workspace leaves the mosaic when onda_agent_spawn mounted it or `unmountWhenEmpty` is true; a workspace the user mounted stays, in its empty state. Returns { success, workspaceId, removedPaneIds, livePaneIds, empty, unmounted }. Only terminals that exited during this Onda run count as dead.',
@@ -1169,6 +1181,11 @@ const TOOL_MAP: Record<string, { method: string; mapParams?: (args: Record<strin
   onda_workspace_prune: { method: 'workspace.prune' },
   onda_workspace_remove: { method: 'workspace.remove' },
   onda_workspace_remove_dead: { method: 'workspace.removeDead' },
+  onda_workspace_cleanup: {
+    method: 'workspace.cleanup',
+    // Dry run unless the caller says otherwise: this deletes and archives.
+    mapParams: (args) => ({ dryRun: args.dryRun !== false, staleDays: args.staleDays }),
+  },
   onda_worktree_retire: { method: 'worktree.retire' },
   onda_worktree_list: { method: 'worktree.list' },
   onda_worktree_activate: { method: 'worktree.activate' },

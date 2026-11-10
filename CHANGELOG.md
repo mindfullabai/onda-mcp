@@ -5,6 +5,7 @@
 ### Changed (OD24-F4, Onda 2.4.0)
 
 - **`onda_agent_spawn` defaults to `placement: "background"`**: a delegate is born unseen (live in the lists, one click in the app mounts it); in the mosaic stay the sessions the user types in. Pass `placement: "workspace"` to keep it on screen. A blocked background delegate enters the app's "waiting for you" queue (rail counter = Dock badge, ⌘J, notification with who, where and what).
+- **`onda_workspace_cleanup { dryRun?, staleDays? }`** (OD24-F6): the startup cleanup on demand, dry run by default. Method `workspace.cleanup`.
 - **`onda_agent_spawn` takes `sessionName`**, passed as is to `agent.spawn` (Claude: `--name`; Codex: ignored). Name a delegate with the step and a few words.
 - **`onda_agent_wait` ends when the agent blocks**: `{ matched: false, blocked: true, state: "waiting_permission" | "waiting_answer", stateSince, ask: { kind, tool, text }, agent, slug }`. New `stopOnBlocked` (default true). An older host ignores it and keeps waiting. Skill `onda-mcp-usage` 0.13.0.
 
