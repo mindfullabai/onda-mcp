@@ -872,6 +872,10 @@ const TOOLS = [
           description: 'placement=same-workspace: split direction for the new pane. Default "down".',
         },
         // --- universal ---
+        sessionName: {
+          type: 'string',
+          description: 'Name of the session, shown by the agent and in its session list (Onda 2.4, OD24-F2.3): Claude gets it as --name, Codex ignores it. Give it the step and a few words, e.g. "OD24-F1 · Empty workspace screen". Not passed when omitted.',
+        },
         agentName: {
           type: 'string',
           description: 'Listener label shown in the pane header (e.g. "kai-2026-05-23"). Recommended: include a date or session identifier so the user can tell concurrent delegations apart.',
@@ -1208,6 +1212,7 @@ const TOOL_MAP: Record<string, { method: string; mapParams?: (args: Record<strin
       workspaceId: args.workspaceId,
       addDirection: args.addDirection,
       agentName: args.agentName,
+      sessionName: args.sessionName,
       agentBin: args.agentBin,
       agentArgs: args.agentArgs,
       execMode: args.execMode,
