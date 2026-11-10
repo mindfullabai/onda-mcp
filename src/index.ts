@@ -6,7 +6,7 @@
  * Connects to Onda's Unix domain socket (JSON-RPC 2.0).
  *
  * AI agents (Claude Code, Cursor, etc.) can use these tools to:
- * - Split panes and create tabs
+ * - Split panes
  * - Run commands in terminals
  * - Orchestrate multi-agent workflows
  * - Query terminal and workspace state
@@ -263,17 +263,6 @@ const TOOLS = [
     },
   },
   {
-    name: 'onda_agentic_open',
-    description:
-      'Open (or focus) the Agentic window: the team roster with one card per agent, live status, and one click to mount a workspace into the mosaic.',
-    inputSchema: { type: 'object' as const, properties: {} },
-  },
-  {
-    name: 'onda_agentic_close',
-    description: 'Close the Agentic window if open.',
-    inputSchema: { type: 'object' as const, properties: {} },
-  },
-  {
     name: 'onda_terminal_kill',
     description: 'Kill a terminal process by ID.',
     inputSchema: {
@@ -296,7 +285,7 @@ const TOOLS = [
         id: { type: 'string', description: 'Terminal ID to read from.' },
         lines: {
           type: 'number',
-          description: 'Optional: cap returned content to the last N lines.',
+          description: 'Optional: cap returned content to the last N lines (and to about 500 characters per line: a full-screen TUI has few newlines). Pass it: without it the whole buffer comes back.',
         },
       },
       required: ['id'],
@@ -433,68 +422,6 @@ const TOOLS = [
     },
   },
 
-  // --- Tab ---
-  {
-    name: 'onda_tab_new',
-    description:
-      'Create a new tab in Onda. Each tab has its own layout of panes. Use this to isolate different workstreams.',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        cwd: { type: 'string', description: 'Working directory for the new tab.' },
-        shell: { type: 'string', description: 'Shell to use.' },
-      },
-    },
-  },
-  {
-    name: 'onda_tab_list',
-    description: 'List all tabs with their IDs, titles, active state, and workspace.',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {},
-    },
-  },
-  {
-    name: 'onda_tab_close',
-    description: 'Close a tab by ID. If no ID given, closes the active tab.',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        id: { type: 'string', description: 'Tab ID to close. Omit to close active tab.' },
-      },
-    },
-  },
-  {
-    name: 'onda_tab_focus',
-    description: 'Switch to (focus) a specific tab by ID.',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        id: { type: 'string', description: 'Tab ID to focus.' },
-      },
-      required: ['id'],
-    },
-  },
-  {
-    name: 'onda_tab_exec',
-    description:
-      'Open a new tab and spawn a process directly with exact argv (bypasses shell parsing). Use this when you need to pass multi-line strings or special characters as a single argument — e.g. launching `claude` with a structured preamble. The process replaces the shell in the tab\'s PTY: argv is passed to execve() as-is, so embedded newlines, quotes, and dollar signs are preserved verbatim.',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        bin: { type: 'string', description: 'Absolute path or PATH-resolvable binary to spawn (e.g., "claude", "/usr/local/bin/aider").' },
-        args: {
-          type: 'array',
-          items: { type: 'string' },
-          description: 'Arguments passed verbatim to the binary. Each element is one argv entry; no shell parsing happens.',
-        },
-        cwd: { type: 'string', description: 'Working directory for the spawned process.' },
-        workspaceId: { type: 'string', description: 'Workspace ID to host the new tab. Omit to use active workspace.' },
-      },
-      required: ['bin'],
-    },
-  },
-
   // --- Workspace ---
   {
     name: 'onda_workspace_list',
@@ -508,7 +435,7 @@ const TOOLS = [
         dead: { type: 'boolean', description: 'true: only workspaces whose folder is gone (rootExists false); false: only those whose folder exists or is remote.' },
         archived: { type: 'boolean', description: 'true: only archived workspaces (no need for includeArchived); false: only active ones.' },
         worktree: { type: 'boolean', description: 'true: only workspaces of a repo that has linked worktrees; false: only the others.' },
-        compact: { type: 'boolean', description: 'Default false. true: each entry is { id, name, rootPath, state, mountedIn } only (state: "archived" | "dead" | "live" | "idle").' },
+        compact: { type: 'boolean', description: 'Default false. true: each entry is { id, rootPath (home as ~), state } only, plus name when it differs from the folder name and mountedIn when mounted (state: "archived" | "dead" | "live" | "idle").' },
       },
     },
   },
@@ -1143,94 +1070,30 @@ const TOOLS = [
       properties: {},
     },
   },
-
-  // ─── Workflow Canvas orchestration (F2.3) ───
-  // Build and run a visual pipeline where each node is a headless `claude -p`
-  // session, chained output→input. Use these to compose a multi-step Claude
-  // pipeline programmatically instead of doing every step yourself in one
-  // session — e.g. "generate options → critique → pick best → implement".
-  {
-    name: 'onda_workflow_create',
-    description:
-      'Create a new (empty) Workflow Canvas pipeline bound to a workspace. Call this when you want to compose a multi-step pipeline of chained Claude sessions. Returns { id }. Then add steps with onda_workflow_add_step.',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        name: { type: 'string', description: 'Human-readable workflow name.' },
-        workspaceId: { type: 'string', description: 'Target workspace id the run spawns into (from onda_workspace_list).' },
-      },
-      required: ['workspaceId'],
-    },
-  },
-  {
-    name: 'onda_workflow_add_step',
-    description:
-      'Append a step to a workflow. Each step is one `claude -p` session with a prompt; its structured JSON output is fed to downstream steps. Set inputFrom to the step ids whose output this step needs.',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        workflowId: { type: 'string', description: 'Workflow id from onda_workflow_create.' },
-        prompt: { type: 'string', description: 'Instruction for this step. End it by telling Claude to write its structured JSON result (the runner injects the exact output path).' },
-        label: { type: 'string', description: 'Short label for the node.' },
-        model: { type: 'string', enum: ['opus', 'sonnet', 'haiku'], description: 'Model tier (default sonnet). Use haiku for cheap mechanical steps.' },
-        inputFrom: { type: 'array', items: { type: 'string' }, description: 'Step ids whose JSON output to inject into this prompt.' },
-        edgeMode: { type: 'string', enum: ['fresh', 'resume'], description: 'fresh = new session; resume = inherit the upstream session context.' },
-        allowedTools: { type: 'array', items: { type: 'string' }, description: "Tools for --allowedTools (e.g. ['Write']). Default ['Read','Write']." },
-        mode: { type: 'string', enum: ['headless', 'interactive'], description: 'headless `claude -p` (default) or interactive TUI in a pane.' },
-      },
-      required: ['workflowId', 'prompt'],
-    },
-  },
-  {
-    name: 'onda_workflow_connect',
-    description: 'Connect two steps (source → target): adds the edge and makes target consume source\'s output. Call after adding both steps.',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        workflowId: { type: 'string' },
-        source: { type: 'string', description: 'Upstream step id.' },
-        target: { type: 'string', description: 'Downstream step id.' },
-      },
-      required: ['workflowId', 'source', 'target'],
-    },
-  },
-  {
-    name: 'onda_workflow_run',
-    description:
-      'Run a workflow. Spawns each step in order in the target workspace, chaining output→input. Returns { accepted }. Poll onda_workflow_status for progress + cost. Runs under safety caps (max steps/concurrency/budget; never bypasses tool permissions).',
-    inputSchema: {
-      type: 'object' as const,
-      properties: { workflowId: { type: 'string' } },
-      required: ['workflowId'],
-    },
-  },
-  {
-    name: 'onda_workflow_cancel',
-    description: 'Cancel an in-flight workflow run.',
-    inputSchema: {
-      type: 'object' as const,
-      properties: { workflowId: { type: 'string' } },
-      required: ['workflowId'],
-    },
-  },
-  {
-    name: 'onda_workflow_status',
-    description: 'Get a workflow run status: per-step status, cost, duration, and cumulative cost. Call this to watch progress after onda_workflow_run.',
-    inputSchema: {
-      type: 'object' as const,
-      properties: { workflowId: { type: 'string' } },
-      required: ['workflowId'],
-    },
-  },
-  {
-    name: 'onda_workflow_list',
-    description: 'List saved workflows (id, name, step count). Use to discover existing pipelines before creating a new one.',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {},
-    },
-  },
 ];
+
+// ─── Result shaping ──────────────────────────────────────────
+
+const isTrue = (v: unknown): boolean => v === true || v === 'true';
+
+/**
+ * `lines` must bound what comes back. An Onda older than 2.4 split the buffer
+ * on newlines only, so a full-screen TUI (few newlines) returned all of it
+ * (1.4 MB with lines=30). Same ceiling as the app: ~500 chars per line, 4 KB
+ * to 200 KB.
+ */
+function clampTerminalRead(result: unknown, lines: unknown): unknown {
+  const n = typeof lines === 'string' ? Number(lines) : lines;
+  if (typeof n !== 'number' || !Number.isFinite(n) || n <= 0) return result;
+  const r = result as { content?: unknown; truncated?: boolean } | null;
+  if (!r || typeof r.content !== 'string') return result;
+  const max = Math.min(200_000, Math.max(4_000, Math.floor(n) * 500));
+  if (r.content.length <= max) return result;
+  let content = r.content.slice(r.content.length - max);
+  const nl = content.indexOf('\n');
+  if (nl >= 0 && nl < content.length / 2) content = content.slice(nl + 1);
+  return { ...r, content, truncated: true };
+}
 
 // ─── Tool → Method mapping ───────────────────────────────────
 
@@ -1268,31 +1131,8 @@ const TOOL_MAP: Record<string, { method: string; mapParams?: (args: Record<strin
   // Agent Team — see agent-team-os/schema/CONTRACT.md
   onda_agent_sessions: { method: 'agent.sessions' },
   onda_agent_events: { method: 'agent.events' },
-  onda_agentic_open: { method: 'agentic.open' },
-  onda_agentic_close: { method: 'agentic.close' },
   onda_terminal_wait_for: { method: 'terminal.waitFor' },
   onda_terminal_send_keys: { method: 'terminal.sendKeys' },
-
-  // Tab
-  onda_tab_new: {
-    method: 'tab.new',
-    mapParams: (args) => ({
-      ...args,
-      // Auto-inject workspaceId from agent context so tab is created
-      // in the agent's workspace, not the currently active one
-      workspaceId: args.workspaceId || ONDA_CONTEXT.workspaceId || undefined,
-    }),
-  },
-  onda_tab_list: { method: 'tab.list' },
-  onda_tab_close: { method: 'tab.close' },
-  onda_tab_focus: { method: 'tab.focus' },
-  onda_tab_exec: {
-    method: 'tab.exec',
-    mapParams: (args) => ({
-      ...args,
-      workspaceId: args.workspaceId || ONDA_CONTEXT.workspaceId || undefined,
-    }),
-  },
 
   // Workspace
   onda_workspace_list: { method: 'workspace.list' },
@@ -1416,15 +1256,6 @@ const TOOL_MAP: Record<string, { method: string; mapParams?: (args: Record<strin
     }),
   },
 
-  // Workflow Canvas orchestration (F2.3)
-  onda_workflow_create: { method: 'workflow.create' },
-  onda_workflow_add_step: { method: 'workflow.addStep' },
-  onda_workflow_connect: { method: 'workflow.connect' },
-  onda_workflow_run: { method: 'workflow.run' },
-  onda_workflow_cancel: { method: 'workflow.cancel' },
-  onda_workflow_status: { method: 'workflow.status' },
-  onda_workflow_list: { method: 'workflow.list' },
-
   // System (onda_context handled separately - it's local, not RPC)
   onda_status: { method: 'session.current' },
   onda_app_info: { method: 'app.info' },
@@ -1523,13 +1354,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       ? mapping.mapParams((args || {}) as Record<string, unknown>)
       : (args || {}) as Record<string, unknown>;
 
-    const result = await callOnda(mapping.method, params);
+    let result = await callOnda(mapping.method, params);
+    if (name === 'onda_terminal_read') result = clampTerminalRead(result, params.lines);
+
+    // A compact list is meant to be small: no indentation.
+    const compactList = name === 'onda_workspace_list' && isTrue(params.compact);
 
     return {
       content: [
         {
           type: 'text',
-          text: JSON.stringify(result, null, 2),
+          text: compactList ? JSON.stringify(result) : JSON.stringify(result, null, 2),
         },
       ],
     };

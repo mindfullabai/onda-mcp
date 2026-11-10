@@ -2,7 +2,7 @@
 name: onda-mcp-usage
 description: Best practices for driving Onda (terminal emulator) from Claude Code via the `onda` MCP server (`mcp__onda__*`). Covers workspaces/windows/panes/terminals + buffer reading (read/subscribe/poll/wait_for/send_keys) + spatial awareness (layout/screenshot). Use whenever you call any `mcp__onda__*` tool or the user mentions Onda, pane, workspace, terminal listener, presence badge, inception loop (Claude controlling Onda from inside Onda). Triggers — onda mcp, drive onda, control onda terminal, show pane, workspace layout, onda screenshot, kai watcher, terminal listener.
 metadata:
-  version: 0.11.0
+  version: 0.12.0
   source: '@mindfullabai/onda-mcp'
 ---
 
@@ -66,7 +66,7 @@ New in `@mindfullabai/onda-mcp@0.6.0` (needs an Onda build from 14 Oct 2026 or l
 - **`onda_workspace_remove`**: archive or delete a workspace nobody is using (`mode`; default delete when its folder is gone, archive otherwise).
 - **`onda_workspace_remove_dead`**: delete every workspace whose folder is gone, in one go (`dryRun` lists them).
 - **`onda_workspace_list` / `onda_workspace_locate`** now return `archivedAt`, `rootExists`, `hostId`, `worktree` and, since 0.7.0, `repoRoot` and `worktrees: { count, active, live }`; `workspace_list` hides archived workspaces unless `includeArchived: true`.
-- **`onda_workspace_list` is big with many workspaces** (100+ KB): narrow it with `live`, `dead` (folder gone), `archived`, `worktree` and ask for `compact: true` (`{ id, name, rootPath, state, mountedIn }`, state one of archived / dead / live / idle). `archivedReason` tells who archived one (manual / agent; older ones may say worktree-retired).
+- **`onda_workspace_list` is big with many workspaces** (100+ KB): narrow it with `live`, `dead` (folder gone), `archived`, `worktree` and ask for `compact: true` (`{ id, rootPath, state }` with the home written `~`, plus `name` only when it differs from the folder name and `mountedIn` only when mounted; state one of archived / dead / live / idle; 86 workspaces come back in under 10 KB). `archivedReason` tells who archived one (manual / agent; older ones may say worktree-retired).
 - `onda_workspace_prune` and `unmountWhenEmpty` on spawn/close (see "Empty workspaces").
 - Fix: a spawn into a workspace it just created/mounted reuses that workspace's fresh shell even while the shell is still loading its profile. Before, the shell read as "busy", a second pane was added, and the orphan shell kept the workspace alive after the agent was gone.
 
@@ -127,7 +127,7 @@ Internal workspace layout = mosaic-component tree. Read it via `onda_workspace_l
 | "Make a worktree the one the workspace looks at" | `onda_worktree_activate` |
 | "Create a worktree, no agent yet" | `onda_worktree_create` |
 | "Group a workspace's panes by worktree" | `onda_workspace_tidy(by="worktree")` |
-| "Read what the terminal has printed so far" | `onda_terminal_read` (no subscribe needed) |
+| "Read what the terminal has printed so far" | `onda_terminal_read` with `lines` (no subscribe needed) |
 | "I want to receive every new output chunk" | `subscribe` + `poll` loop |
 | "Wait until the build finishes" | `onda_terminal_wait_for` with regex |
 | "Press Ctrl+C / Up / Esc" | `onda_terminal_send_keys` (NOT `terminal_send` with `"\x03"`!) |
@@ -139,6 +139,8 @@ Internal workspace layout = mosaic-component tree. Read it via `onda_workspace_l
 ## Pattern: working with terminal buffer (reads)
 
 Onda 1.9.1+ attaches the MCP tap **eagerly at PTY spawn**, so `terminal_read` and `subscribe.bufferSnapshot` return the full history regardless of when you first ask. The pre-0.3.1 anti-pattern (subscribe-before-run) is no longer required for correctness.
+
+**Always pass `lines` to `terminal_read`.** Without it you get the whole buffer (up to ~200 KB, ~1 MB with a listener). With it you get the last N lines, and never more than ~500 characters per line: a full-screen TUI such as Claude Code repaints with cursor moves and has few newlines, so "the last 30 lines" used to be the whole buffer (1.4 MB on 10 Nov 2026, fixed in Onda 2.4.0 and clamped by the MCP itself).
 
 ```
 ✓ run → read                       (run + check, works post-fix)
@@ -533,11 +535,11 @@ unsubscribe(...)
 
 ## Pattern: drive a remote Claude Code session (auto-pilot)
 
-Use case: Alita just spawned Kai in an adjacent Onda tab and wants to **guide it autonomously** without Mario clicking anything. Pattern validated 21 May 2026.
+Use case: Alita just spawned Kai in an adjacent Onda pane and wants to **guide it autonomously** without Mario clicking anything. Pattern validated 21 May 2026.
 
 ```
-# 1. Spawn (tab_exec or terminal_spawn)
-tab_exec(bin="claude", args=["--model","sonnet"], cwd="~/Projects/...")
+# 1. Spawn (agent_spawn, see "Starting an agent session")
+agent_spawn(placement="workspace", workspaceRootPath="~/Projects/...", agentBin="claude", agentArgs=["--model","sonnet"])
 
 # 2. Find the terminal ID (filter by workspaceId)
 terms = terminal_list(workspaceId="...")
@@ -696,9 +698,6 @@ Pane:
 - `onda_pane_attach` — re-attach a live orphan terminal (alive in `onda_terminal_list`, in no workspace layout) to a new pane of a mounted workspace
 - `onda_pane_split` / `vsplit` / `hsplit` — low-level split (prefer `workspace_add_terminal` with `direction`)
 - `onda_pane_close` — close pane
-
-Tab (legacy, before tiled-mode-first model):
-- `onda_tab_new` / `list` / `close` / `focus` / `exec`
 
 Terminal (control plane):
 - `onda_terminal_list` — active terminals
