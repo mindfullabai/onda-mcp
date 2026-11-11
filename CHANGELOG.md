@@ -2,6 +2,19 @@
 
 ## 0.7.0 (unreleased)
 
+### Removed (OD24-F5, Onda 2.4.0)
+
+Used in 90 days across both accounts: `onda_workflow_*` 3 calls, `onda_agentic_open` 1, `onda_tab_*` 0.
+
+- **`onda_workflow_*`** (create, add_step, connect, run, cancel, status, list): the Workflow Canvas is gone from Onda.
+- **`onda_agentic_open` / `onda_agentic_close`**: the Agent Team (Agentic) window is gone from Onda.
+- **`onda_tab_*`** (new, list, close, focus, exec): to start a program in a new pane use `onda_agent_spawn`, `onda_workspace_add_terminal` or `onda_terminal_spawn`. A host older than 2.4 still answers the removed tools' methods, but the server no longer lists them.
+
+### Fixes (OD24-F5.4)
+
+- **`onda_terminal_read`** honours `lines` on a full-screen TUI: the app now also caps a `lines` read to ~500 characters per line (4 to 200 KB), and the MCP clamps the same way for an older host. It was 1.4 MB with `lines: 30`.
+- **`onda_workspace_list` with `compact`**: entries are `{ id, rootPath, state }` (home as `~`) plus `name` only when it differs from the folder name and `mountedIn` only when mounted, printed without indentation; booleans sent as the strings `"true"`/`"false"` are accepted (the filter used to be ignored silently). Skill `onda-mcp-usage` 0.12.0.
+
 Needs an Onda build with WT30 (2.3 or later, `onda-electron` branch `feat/wt30-*`). The entries below the WT30 ones (formerly headed 0.6.0, 0.7.0 and 0.8.0, never published) ship in this same release. An older host answers `Unknown method` for the new tools, ignores `worktreePath` and answers spawn, close and retire with the old per-worktree workspace fields; a newer host with an older MCP still answers, but the tool descriptions are out of date.
 
 ### Features (WT30: one workspace per repo, worktrees as its children)

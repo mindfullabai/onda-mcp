@@ -54,7 +54,7 @@ Same MCP config format as above.
 | Tool | Description |
 |------|-------------|
 | `onda_pane_split` | Split the active pane. Creates a new terminal beside (`right`) or below (`down`) the current one. |
-| `onda_pane_list` | List all panes in the active tab. Returns pane IDs, terminal IDs, and content types. |
+| `onda_pane_list` | List all panes of the focused window. Returns pane IDs, terminal IDs, and content types. |
 | `onda_pane_close` | Close a specific pane by ID. If no ID given, closes the active pane. |
 | `onda_pane_focus` | Focus (activate) a specific pane by its ID. |
 | `onda_pane_attach` | Re-attach a live terminal that no pane shows (an orphan) to a new pane of a mounted workspace, without a new shell. |
@@ -68,15 +68,6 @@ Same MCP config format as above.
 | `onda_terminal_list` | List terminals with `{id, pid, cwd, alive, workspaceId, paneId, tabId, windowId}`. Optional input filters `workspaceId` / `windowId`. |
 | `onda_terminal_spawn` | Spawn a binary inside an existing pane via `exec bin args...`, preserving multi-line/quoted argv. Use to start `claude` (or any agent) with a structured prompt in a pre-existing workspace pane. |
 | `onda_terminal_kill` | Kill a terminal process by ID. |
-
-### Tab Management
-
-| Tool | Description |
-|------|-------------|
-| `onda_tab_new` | Create a new tab. Each tab has its own layout of panes. |
-| `onda_tab_list` | List all tabs with their IDs, titles, active state, and workspace. |
-| `onda_tab_close` | Close a tab by ID. If no ID given, closes the active tab. |
-| `onda_tab_focus` | Switch to (focus) a specific tab by ID. |
 
 ### Workspace Management
 
@@ -110,7 +101,7 @@ Same MCP config format as above.
 | Tool | Description |
 |------|-------------|
 | `onda_context` | Get the Onda context for the current AI agent (paneId, tabId, workspaceId). Call this first. |
-| `onda_status` | Get current session state: active workspace, tab, pane, and their details. |
+| `onda_status` | Get current session state: active workspace, pane, and their details. |
 | `onda_app_info` | Get Onda app info: version, process ID. |
 | `onda_ping` | Health check -- verify Onda is running and responsive. |
 
