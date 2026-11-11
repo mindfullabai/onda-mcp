@@ -2,7 +2,7 @@
 name: onda-mcp-usage
 description: Best practices for driving Onda (terminal emulator) from Claude Code via the `onda` MCP server (`mcp__onda__*`). Covers workspaces/windows/panes/terminals + buffer reading (read/subscribe/poll/wait_for/send_keys) + spatial awareness (layout/screenshot). Use whenever you call any `mcp__onda__*` tool or the user mentions Onda, pane, workspace, terminal listener, presence badge, inception loop (Claude controlling Onda from inside Onda). Triggers — onda mcp, drive onda, control onda terminal, show pane, workspace layout, onda screenshot, kai watcher, terminal listener.
 metadata:
-  version: 0.12.0
+  version: 0.13.0
   source: '@mindfullabai/onda-mcp'
 ---
 
@@ -46,8 +46,10 @@ Same rules in the app, the CLI, the MCP and this skill.
 
 1. **Live = an agent or a process.** A workspace is live only when one of its terminals runs an agent session (claude, codex, qwen…) or a foreground program that is not the shell (build, dev server, script). A shell at its prompt is not live, and neither is a pane you are merely subscribed to. `onda_workspace_list`, `onda_pane_list`, `onda_terminal_list` (and `onda workspace list` / `onda list` / `onda pane list` in the CLI) report `live_reason: "agent" | "process" | "none"` plus `live_process` (the program). Detaching a workspace from the mosaic **closes its idle shells** (it leaves Background · live); with an agent or a process running nothing is touched and the row shows the program.
 2. **A workspace is born empty.** `workspace_create`, the app and the CLI open no terminal: the tile shows the welcome screen (recent sessions, "New session as …", "Open Terminal"). Whoever wants a terminal opens one: `agent_spawn` (creates the pane), or `workspace_add_terminal` for a plain shell. Never assume a pane exists.
-3. **The orchestrator keeps the space (ON24-F4).** The session that orchestrates is where the user reads and writes; the agents it starts work mostly for it, and stay visible but small. After **every** spawn that puts a workspace on screen, call `onda_workspace_tile(layout="main", anchorWorkspaceId=<your workspace, from onda_context>)`: your workspace large on the left (62% of the width by default, `mainPercent` to change it), the delegated agents stacked in a column on the right, two narrow columns past 4 of them. The user should never have to drag tiles around (⇧⌘M does the same from the keyboard, with the focused workspace as the main one). `layout: "grid" | "columns" | "rows"` or `order: [...]` only if asked for another arrangement. It never mounts or detaches anything.
-4. **Trial sessions run in the background.** A session you start only to try something (a smoke test of a CLI, a check of a fix, a throwaway agent) and a delegate nobody needs to watch go with `agent_spawn(placement="background")`: the session runs unseen, is listed as live (`onda_workspace_list`: `live_reason` set, `mountedIn: null`; in the app under "Background · live", where a click mounts it), and prompt / wait / close work as usual. Do not put it on screen just to close it a minute later.
+3. **The orchestrator keeps the space (ON24-F4).** The session that orchestrates is where the user reads and writes; the agents it starts work for it. After a spawn that puts a workspace on screen (`placement="workspace"`), call `onda_workspace_tile(layout="main", anchorWorkspaceId=<your workspace, from onda_context>)`: your workspace large on the left (62% of the width by default, `mainPercent` to change it), the delegated agents stacked in a column on the right, two narrow columns past 4 of them. The user should never have to drag tiles around (⇧⌘M does the same from the keyboard, with the focused workspace as the main one). `layout: "grid" | "columns" | "rows"` or `order: [...]` only if asked for another arrangement. It never mounts or detaches anything.
+4. **Delegates run in the background, by default (OD24-F4.3, onda-mcp 0.8).** `agent_spawn` without `placement` is `placement="background"`: the session runs unseen, is listed as live (`onda_workspace_list`: `live_reason` set, `mountedIn: null`; in the app under "Background · live", where a click mounts it), and prompt / wait / close work as usual. In the mosaic stay the sessions the user types in. When a background delegate blocks on a permission or a question it enters the app's **"waiting for you" queue** (counter in the rail = Dock badge, ⌘J goes to the next one and mounts it, a notification says who, where and what). Ask for `placement="workspace"` only when the user wants to watch that session.
+6. **Name the session you delegate (Onda 2.4).** `agent_spawn(sessionName="OD24-F1 · Empty workspace screen")`: the plan step and a few words. Claude shows it (`--name`) and it is how the session reads in its list and on the workspace screen; Codex ignores it.
+5. **A blocked delegate ends the wait (Onda 2.4, OD24-F4.4).** `agent_wait` returns at once with `{ matched: false, blocked: true, state, ask: { kind, tool, text } }` when the agent waits on a permission (`waiting_permission`) or a question (`waiting_answer`); `ask.text` is the command, the file or the question. Answer it if it is within your mandate (`agent_prompt`, `terminal_send_keys`), else tell the user; then wait again. `stopOnBlocked: false` keeps the old behaviour. The same `ask` is in `~/.agent-team-os/onda/sessions.json` for whoever watches the file.
 
 `agent_spawn` picks its pane by the same logic: none → creates one; an idle shell → reuses it; **the same agent already in the workspace → no second session**, you get that terminal back with `reusedAgent: true` (`state` "ready" or "busy"). `allowDuplicate: true` only when a second session in the same folder is really wanted (and then give it its own `AB_SESSION_SLUG`).
 
@@ -65,6 +67,7 @@ New in `@mindfullabai/onda-mcp@0.6.0` (needs an Onda build from 14 Oct 2026 or l
 - **Worktrees**: `onda_agent_spawn(worktree={repoRoot, branch, from?})` creates or reuses the branch's git worktree next to the repo and trusts it for Claude Code; since 0.7.0 the agent runs in a pane of the repo's workspace. `onda_agent_close(removeWorktree=true)` removes the worktree only when clean and merged. See "Worktrees inside the repo workspace" below.
 - **`onda_workspace_remove`**: archive or delete a workspace nobody is using (`mode`; default delete when its folder is gone, archive otherwise).
 - **`onda_workspace_remove_dead`**: delete every workspace whose folder is gone, in one go (`dryRun` lists them).
+- **`onda_workspace_cleanup`** (Onda 2.4): what Onda does at startup, on demand. Folder gone or temporary → deleted, not opened for `staleDays` (default 30) → archived; never pinned, mounted or live. Dry run by default: read the list, then `dryRun: false`.
 - **`onda_workspace_list` / `onda_workspace_locate`** now return `archivedAt`, `rootExists`, `hostId`, `worktree` and, since 0.7.0, `repoRoot` and `worktrees: { count, active, live }`; `workspace_list` hides archived workspaces unless `includeArchived: true`.
 - **`onda_workspace_list` is big with many workspaces** (100+ KB): narrow it with `live`, `dead` (folder gone), `archived`, `worktree` and ask for `compact: true` (`{ id, rootPath, state }` with the home written `~`, plus `name` only when it differs from the folder name and `mountedIn` only when mounted; state one of archived / dead / live / idle; 86 workspaces come back in under 10 KB). `archivedReason` tells who archived one (manual / agent; older ones may say worktree-retired).
 - `onda_workspace_prune` and `unmountWhenEmpty` on spawn/close (see "Empty workspaces").
@@ -278,7 +281,7 @@ The flow is **split into spawn + prompt** intentionally. Booting a TUI like Clau
 ```
 # 1. Spawn (boot only — no prompt yet)
 spawn = agent_spawn(
-  placement="workspace",                       # create-or-locate workspace + mount + add terminal
+  # placement omitted = "background" (default since 0.8): create-or-locate + add terminal, unseen
   workspaceRootPath="~/Projects/04-Production/Orbit",
   mountDirection="right",                      # splice the new tile to the right
   agentName="kai-2026-05-23",                  # listener label in pane header
@@ -504,8 +507,8 @@ Concretely: the alternative (single `agent_spawn` call that also submits the pro
 
 | Mode | When to use |
 |------|-------------|
-| `workspace` (default) | Long isolated delegation you (or the user) want to watch. New tile alongside yours in the same window; then `workspace_tile(layout="main")`. Survives across delegations. |
-| `background` | Trial sessions and delegates nobody needs to watch. Same as `workspace`, but the workspace leaves the mosaic as soon as the terminal runs: live, unseen, one click in "Background · live" mounts it. A workspace already on screen stays there (`background: false` + `backgroundNote`). |
+| `background` (default) | Delegates and trial sessions. The workspace leaves the mosaic as soon as the terminal runs: live, unseen, one click in "Background · live" mounts it; when it blocks it enters the "waiting for you" queue. A workspace already on screen stays there (`background: false` + `backgroundNote`). |
+| `workspace` | A session the user wants to watch. New tile alongside yours in the same window; then `workspace_tile(layout="main")`. |
 | `pane-split` | Quick parallel work in the SAME workspace you're already in. The agent's cwd is `splitCwd`. Nothing to clean up at the workspace level. |
 | `same-workspace` | The target workspace is already mounted (`workspaceId`). Just add another terminal pane to it — useful when several agents share one repo. |
 
