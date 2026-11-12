@@ -2,6 +2,11 @@
 
 ## 0.7.0 (unreleased)
 
+### Fixed (OD25-F8.1, needs Onda with onda-electron#51)
+
+- **Closing a remote agent closes its session on the host.** `onda_agent_close(killPty)` and `onda_terminal_kill` on a remote pane now kill that pane's tmux session too; the result says `remoteSessionKilled` / `remoteSessionReason`, and a host that does not answer gives `success: false` + `orphan: true` instead of a silent "closed".
+- **`onda_remote_kill_session { hostId, session }`**: kill one `onda-*` session by exact name (orphans, or sessions whose pane is gone). Method `remote.killSession`. `onda_remote_sessions` marks orphans with `orphan: true`.
+
 ### Changed (OD24-F4, Onda 2.4.0)
 
 - **`onda_agent_spawn` defaults to `placement: "background"`**: a delegate is born unseen (live in the lists, one click in the app mounts it); in the mosaic stay the sessions the user types in. Pass `placement: "workspace"` to keep it on screen. A blocked background delegate enters the app's "waiting for you" queue (rail counter = Dock badge, ⌘J, notification with who, where and what).
