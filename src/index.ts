@@ -264,7 +264,7 @@ const TOOLS = [
   },
   {
     name: 'onda_terminal_kill',
-    description: 'Kill a terminal process by ID.',
+    description: 'Kill a terminal process by ID. A remote terminal also loses its tmux session on the host (`remoteSessionKilled`, `remoteSessionReason`; host not answering → `success: false` + `orphan: true`).',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -759,13 +759,26 @@ const TOOLS = [
   {
     name: 'onda_remote_sessions',
     description:
-      'List live tmux sessions on a remote host, with the command running in each. This is how to find work left behind by an earlier session — including your own after a disconnect.',
+      'List live tmux sessions on a remote host, with the command running in each. This is how to find work left behind by an earlier session — including your own after a disconnect: a pane showing "Reconnection failed" usually still has its session alive here, so reattach to it rather than opening a new one. Sessions someone asked to kill while the host was not answering come back with `orphan: true` (and in `orphans`): finish them with onda_remote_kill_session.',
     inputSchema: {
       type: 'object' as const,
       properties: {
         hostId: { type: 'string', description: 'Remote host id, e.g. "mini".' },
       },
       required: ['hostId'],
+    },
+  },
+  {
+    name: 'onda_remote_kill_session',
+    description:
+      'Kill ONE tmux session on a remote host, by its exact name (only sessions Onda created, `onda-…`). Use it for an orphan listed by onda_remote_sessions, or a session whose pane is already gone. Result: `remoteSessionKilled` and `remoteSessionReason` (killed | not_found | host_unreachable | kill_failed); when the host does not confirm, `success: false` with `error` and the session stays listed as an orphan. To close a pane you still have, use onda_agent_close(killPty) instead.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        hostId: { type: 'string', description: 'Remote host id, e.g. "mini".' },
+        session: { type: 'string', description: 'Exact tmux session name, as onda_remote_sessions lists it (e.g. "onda-8f08e0c3-4645c4b1").' },
+      },
+      required: ['hostId', 'session'],
     },
   },
   {
@@ -1036,7 +1049,7 @@ const TOOLS = [
   {
     name: 'onda_agent_close',
     description:
-      'Escalation cleanup after an agent finishes (or to abandon a delegation). Three levels: SOFT — only `sessionId` set → unsubscribe (keeps PTY alive, lets you reattach or let the user inspect). MEDIUM — `+ killPty + terminalId` → terminates the agent process; a pane created by onda_agent_spawn goes with it. HARD — `+ unmountWorkspace + workspaceId` (and optionally `+ closeWindow + windowId`) → full teardown of an ephemeral delegation. Add `closePane` to remove any pane (the workspace\'s last one included) instead of leaving it on screen as "[Process exited]".\n\n**Empty workspaces.** After a kill or a pane close, if no live terminal is left in the workspace it leaves the mosaic when onda_agent_spawn mounted it (default), or when `unmountWhenEmpty: true`; a workspace the user mounted by hand stays, in its empty state. The result says `workspaceEmpty`, `unmounted`, and `removedPaneIds` (the closed pane plus any dead agent panes). For "[Process exited]" panes that are not the agent\'s, use onda_workspace_prune. All fields are optional; the tool does only what you ask (closeWindow without killPty first detaches the window\'s workspaces, so their sessions survive the close).',
+      'Escalation cleanup after an agent finishes (or to abandon a delegation). Three levels: SOFT — only `sessionId` set → unsubscribe (keeps PTY alive, lets you reattach or let the user inspect). MEDIUM — `+ killPty + terminalId` → terminates the agent process; a pane created by onda_agent_spawn goes with it. On a remote workspace this also kills the pane\'s tmux session on the host (only that one): the result says `remoteSessionKilled` and `remoteSessionReason`; if the host does not answer you get `success: false`, `errorCode` and `orphan: true` — the session may still be running, see onda_remote_sessions. HARD — `+ unmountWorkspace + workspaceId` (and optionally `+ closeWindow + windowId`) → full teardown of an ephemeral delegation. Add `closePane` to remove any pane (the workspace\'s last one included) instead of leaving it on screen as "[Process exited]".\n\n**Empty workspaces.** After a kill or a pane close, if no live terminal is left in the workspace it leaves the mosaic when onda_agent_spawn mounted it (default), or when `unmountWhenEmpty: true`; a workspace the user mounted by hand stays, in its empty state. The result says `workspaceEmpty`, `unmounted`, and `removedPaneIds` (the closed pane plus any dead agent panes). For "[Process exited]" panes that are not the agent\'s, use onda_workspace_prune. All fields are optional; the tool does only what you ask (closeWindow without killPty first detaches the window\'s workspaces, so their sessions survive the close).',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -1207,6 +1220,7 @@ const TOOL_MAP: Record<string, { method: string; mapParams?: (args: Record<strin
   // the warning below about schemas and mappers drifting apart.
   onda_remote_list: { method: 'remote.list' },
   onda_remote_sessions: { method: 'remote.sessions' },
+  onda_remote_kill_session: { method: 'remote.killSession' },
   onda_remote_readdir: { method: 'remote.readDir' },
   onda_launch_session: { method: 'launchSession' },
 
