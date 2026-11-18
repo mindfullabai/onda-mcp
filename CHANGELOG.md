@@ -2,6 +2,11 @@
 
 ## 0.7.0 (unreleased)
 
+### Added (OD25-F8.3 / F8.4, needs Onda with the matching onda-electron PR)
+
+- **`onda_terminal_reconnect { id, waitMs? }`**: a remote terminal whose connection gave up reattaches to the same tmux session, attempts reset, size re-applied. Method `terminal.reconnect`. `onda_terminal_list` and `onda_agent_sessions` now say `connection` (connected | reconnecting | failed) and `connectionReason` for remote terminals.
+- **`onda_remote_sessions` says how long a session has been left alone**: `detachedSince`, `detachedFor`, `detachedForMs`, `quietForMs`, `detachedEstimated`, and `stale` against the host's `staleAfterHours` (default 24).
+
 ### Fixed (OD25-F8.1, needs Onda with onda-electron#51)
 
 - **Closing a remote agent closes its session on the host.** `onda_agent_close(killPty)` and `onda_terminal_kill` on a remote pane now kill that pane's tmux session too; the result says `remoteSessionKilled` / `remoteSessionReason`, and a host that does not answer gives `success: false` + `orphan: true` instead of a silent "closed".

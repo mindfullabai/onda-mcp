@@ -234,7 +234,7 @@ const TOOLS = [
   {
     name: 'onda_terminal_list',
     description:
-      'List active terminals. Each entry: { id, pid, cwd, alive, workspaceId, paneId, tabId, windowId, live_reason, live_process }. `live_reason` says what keeps it live: "agent" (an agent session: claude, codex, qwen…), "process" (another foreground program: a build, a dev server, a script) or "none" (a shell at its prompt — not live), with the program in `live_process`. Use the optional filters to scope the list. Essential to disambiguate which terminal belongs to which workspace/window when many are alive — no more cwd reverse-lookup.',
+      'List active terminals. Each entry: { id, pid, cwd, alive, workspaceId, paneId, tabId, windowId, live_reason, live_process }; a remote terminal adds { remote: true, remoteHostId, remoteSession, connection, connectionReason }, where `connection` is connected | reconnecting | failed — on "failed" call onda_terminal_reconnect, do not open a new session. `live_reason` says what keeps it live: "agent" (an agent session: claude, codex, qwen…), "process" (another foreground program: a build, a dev server, a script) or "none" (a shell at its prompt — not live), with the program in `live_process`. Use the optional filters to scope the list. Essential to disambiguate which terminal belongs to which workspace/window when many are alive — no more cwd reverse-lookup.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -246,7 +246,7 @@ const TOOLS = [
   {
     name: 'onda_agent_sessions',
     description:
-      'List live agent sessions (Claude Code and friends) known to Onda, as reported by the Agent Team OS hook and the screen. Each entry: { sessionId, terminalId, paneId, workspaceId, agent, status, state, stateSince, mounted, windowId, host, lastTool, lastTarget, ctxPct, inboxPending, since, lastSeen }. This is how an agent can see its own team: who is working, who is stuck, and where. `state` says WHO IS STUCK: working | idle | waiting_permission | waiting_answer | pending_input | exited. pending_input = text sits in the prompt box, never sent (no Enter), and nothing has moved for 60 s: the agent is NOT working. stateSince is an ISO timestamp (for pending_input, when the box went quiet). mounted = the workspace is in a window mosaic (windowId says which; false/null = alive but off screen). host is always \"laptop\" for now. Check `state` before saying an agent is working. `status` (busy | waiting | idle | error) is kept for compatibility and is coarser: a pending_input session shows status idle. Needs an Onda build from 14 Oct 2026 or later (older hosts return status only).',
+      'List live agent sessions (Claude Code and friends) known to Onda, as reported by the Agent Team OS hook and the screen. Each entry: { sessionId, terminalId, paneId, workspaceId, agent, status, state, stateSince, mounted, windowId, host, lastTool, lastTarget, ctxPct, inboxPending, since, lastSeen }. This is how an agent can see its own team: who is working, who is stuck, and where. `state` says WHO IS STUCK: working | idle | waiting_permission | waiting_answer | pending_input | exited. pending_input = text sits in the prompt box, never sent (no Enter), and nothing has moved for 60 s: the agent is NOT working. stateSince is an ISO timestamp (for pending_input, when the box went quiet). mounted = the workspace is in a window mosaic (windowId says which; false/null = alive but off screen). host is always \"laptop\" for now. A session on a remote host adds `remote: true`, `remoteHostId`, `remoteSession` and `connection` (connected | reconnecting | failed, with `connectionReason`): \"failed\" means the line to the host gave up while the agent is still running there — use onda_terminal_reconnect(terminalId). Check `state` before saying an agent is working. `status` (busy | waiting | idle | error) is kept for compatibility and is coarser: a pending_input session shows status idle. Needs an Onda build from 14 Oct 2026 or later (older hosts return status only).',
     inputSchema: { type: 'object' as const, properties: {} },
   },
   {
@@ -759,13 +759,26 @@ const TOOLS = [
   {
     name: 'onda_remote_sessions',
     description:
-      'List live tmux sessions on a remote host, with the command running in each. This is how to find work left behind by an earlier session — including your own after a disconnect: a pane showing "Reconnection failed" usually still has its session alive here, so reattach to it rather than opening a new one. Sessions someone asked to kill while the host was not answering come back with `orphan: true` (and in `orphans`): finish them with onda_remote_kill_session.',
+      'List live tmux sessions on a remote host, with the command running in each. This is how to find work left behind by an earlier session — including your own after a disconnect: a pane showing "Reconnection failed" usually still has its session alive here; if the pane is still open use onda_terminal_reconnect on it, otherwise reattach to the session rather than opening a new one. Each session says how long nobody has been attached: `attached`, `detachedSince` (ISO), `detachedFor` ("26h"), `detachedForMs`, `quietForMs` (since its last output), `detachedEstimated: true` when the time is inferred (session made before Onda recorded detaches). `stale: true` = an Onda session detached AND quiet for at least `staleAfterHours` (per host, Settings → Remotes, default 24): a candidate for onda_remote_kill_session — but close it only if it is yours or the user asked; a detached session is how remote work survives. Sessions someone asked to kill while the host was not answering come back with `orphan: true` (and in `orphans`): finish them with onda_remote_kill_session.',
     inputSchema: {
       type: 'object' as const,
       properties: {
         hostId: { type: 'string', description: 'Remote host id, e.g. "mini".' },
       },
       required: ['hostId'],
+    },
+  },
+  {
+    name: 'onda_terminal_reconnect',
+    description:
+      'Reconnect a remote terminal whose connection gave up (`connection: "failed"` in onda_terminal_list / onda_agent_sessions, or a pane showing "Reconnection failed after 10 attempts"). It attaches again to the SAME tmux session, with the attempt counter reset: the program running on the host (an agent, a build) was never stopped and comes back as it is, with the pane size re-applied. Always prefer this to spawning a new session or agent on the host — a new one would start from zero and leave the old one running detached. Waits up to `waitMs` (default 10000, max 30000) for the outcome; result: { success, outcome: reconnecting | already_connected | in_flight, connection: connected | reconnecting | failed, connectionReason }. `connection: "reconnecting"` after the wait = still trying, check onda_terminal_list later; "failed" again = the host is still unreachable (check onda_remote_list). Local terminals answer errorCode "not_remote".',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        id: { type: 'string', description: 'terminalId of the remote terminal.' },
+        waitMs: { type: 'number', description: 'How long to wait for connected/failed, ms (default 10000, max 30000; 0 = return at once).' },
+      },
+      required: ['id'],
     },
   },
   {
@@ -1221,6 +1234,7 @@ const TOOL_MAP: Record<string, { method: string; mapParams?: (args: Record<strin
   onda_remote_list: { method: 'remote.list' },
   onda_remote_sessions: { method: 'remote.sessions' },
   onda_remote_kill_session: { method: 'remote.killSession' },
+  onda_terminal_reconnect: { method: 'terminal.reconnect' },
   onda_remote_readdir: { method: 'remote.readDir' },
   onda_launch_session: { method: 'launchSession' },
 
