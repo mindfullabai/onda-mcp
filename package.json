@@ -6,8 +6,8 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "bin": {
-    "onda-mcp": "./dist/index.js",
-    "onda-mcp-install-skill": "./bin/install-skill.mjs"
+    "onda-mcp": "dist/index.js",
+    "onda-mcp-install-skill": "bin/install-skill.mjs"
   },
   "exports": {
     ".": {
